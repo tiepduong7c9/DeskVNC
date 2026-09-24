@@ -1,0 +1,93 @@
+name: Linux packages
+
+# deb and rpm for x86_64 and aarch64, and nothing else.
+#
+# Upstream's Release workflow also builds Windows and macOS, and carries the
+# Apple signing and notarization machinery with it. This fork has no use for
+# either and no secrets to feed them, so this is a separate file rather than an
+# edit to `release.yml`: leaving that one untouched keeps `git merge upstream/main`
+# free of conflicts on a file this fork will never run.
+#
+# Installers are slow, so this does not build on every push. Run it from the
+# Actions tab, or push a v* tag.
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            label: Linux x86_64 (deb + rpm)
+            target: x86_64-unknown-linux-gnu
+            artifact: linux-x86_64
+          # GitHub's free ARM runners are available to public repositories.
+          # 22.04 rather than 24.04 to match the x86_64 job: the glibc a
+          # package is linked against is the oldest it will install on, and
+          # two jobs on one base means one answer to "which distributions does
+          # this run on" instead of two.
+          - os: ubuntu-22.04-arm
+            label: Linux aarch64 (deb + rpm)
+            target: aarch64-unknown-linux-gnu
+            artifact: linux-aarch64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
+            libssl-dev libdbus-1-dev pkg-config cmake
+        # `cmake` is not decoration: `aws-lc-sys` arrives through `russh` and
+        # `rustls` and shells out to it, so without it the build dies part way
+        # through an otherwise long compile.
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: ui
+
+      # `tauri.conf.json` sets `targets: all`, which on Linux means deb, rpm
+      # and AppImage. `--bundles deb,rpm` narrows that: AppImage roughly
+      # doubles the job for a format this fork does not ship.
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: --target ${{ matrix.target }} --bundles deb,rpm
+
+      - name: Show what was built
+        run: ls -la target/${{ matrix.target }}/release/bundle/deb target/${{ matrix.target }}/release/bundle/rpm
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            target/${{ matrix.target }}/release/bundle/deb/*.deb
+            target/${{ matrix.target }}/release/bundle/rpm/*.rpm
+          # A green job that uploaded nothing is worse than a red one.
+          if-no-files-found: error
