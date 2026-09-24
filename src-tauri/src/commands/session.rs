@@ -1732,19 +1732,118 @@ pub async fn send_clipboard(
 /// WebKit (macOS/Linux) only honours `writeText()` while a user gesture is
 /// still active, and remote clipboard text arrives from the socket, long after
 /// any click. The write has to happen natively or it silently does nothing.
+#[cfg(not(target_os = "linux"))]
 #[tauri::command]
 pub fn set_local_clipboard(app: AppHandle, text: String) -> Result<(), String> {
     use tauri_plugin_clipboard_manager::ClipboardExt;
     app.clipboard().write_text(text).map_err(|e| e.to_string())
 }
 
+/// Linux: GTK's clipboard rather than the plugin's.
+///
+/// `arboard`, under `tauri-plugin-clipboard-manager`, reaches Wayland only
+/// through `ext-data-control`/`wlr-data-control`. GNOME advertises neither, on
+/// purpose: those protocols let any client read the clipboard unprompted. So
+/// `arboard` falls back to X11 and the selection is owned by an XWayland
+/// client living inside a window that is itself a native Wayland client.
+/// Mutter bridges the two namespaces but re-arbitrates ownership on focus
+/// change, which is the exact moment `Session.tsx` runs its sync, so a paste
+/// crossed only when it won that race.
+///
+/// GTK has no such problem: this process already owns a focused Wayland
+/// surface, so `wl_data_device.set_selection` is ours to call and no bridge is
+/// involved. The cost is that GTK is main-thread-only, hence the hop.
+#[cfg(target_os = "linux")]
+#[tauri::command]
+pub fn set_local_clipboard(app: AppHandle, text: String) -> Result<(), String> {
+    on_gtk_main(&app, move || {
+        let clipboard = gtk_clipboard()?;
+        clipboard.set_text(&text);
+        // `store()` is deliberately not called. It asks the clipboard manager
+        // to take a copy so the text outlives this process, and it waits for
+        // the manager to answer, on the main thread. Survival past exit is not
+        // worth a possible stall mid-session; GNOME's manager takes a copy of
+        // its own accord anyway.
+        Ok(())
+    })
+}
+
 /// Read the OS clipboard for a push to the remote. Same reasoning as
 /// [`set_local_clipboard`]: `navigator.clipboard.readText()` is gesture- and
 /// permission-gated in the webview.
+#[cfg(not(target_os = "linux"))]
 #[tauri::command]
 pub fn read_local_clipboard(app: AppHandle) -> Result<String, String> {
     use tauri_plugin_clipboard_manager::ClipboardExt;
     app.clipboard().read_text().map_err(|e| e.to_string())
+}
+
+/// Linux: the read half of [`set_local_clipboard`], and the same reasoning.
+///
+/// `wait_for_text` blocks, and that is deliberate. A synchronous
+/// `#[tauri::command]` is dispatched on the main thread, and
+/// `run_on_main_thread` runs its closure inline when it is already there
+/// (`tauri-runtime-wry/src/lib.rs:239`). So the asynchronous `request_text`
+/// cannot work here: registering a callback and then waiting on a channel
+/// starves the GTK loop that has to deliver it, and the read times out every
+/// time. `wait_for_text` spins a nested `GMainLoop`, which keeps pumping
+/// Wayland events while it waits, so the selection owner can actually answer.
+#[cfg(target_os = "linux")]
+#[tauri::command]
+pub fn read_local_clipboard(app: AppHandle) -> Result<String, String> {
+    on_gtk_main(&app, || {
+        // No owner, or an owner holding something that is not text, both read
+        // as empty, which `pushClipboard` already treats as nothing to send.
+        Ok(gtk_clipboard()?
+            .wait_for_text()
+            .map(|t| t.to_string())
+            .unwrap_or_default())
+    })
+}
+
+/// The default display's `CLIPBOARD` selection, never `PRIMARY`.
+///
+/// PRIMARY is the middle-click selection and follows every drag of the mouse;
+/// syncing it to a remote machine would push text nobody asked to copy.
+#[cfg(target_os = "linux")]
+fn gtk_clipboard() -> Result<gtk::Clipboard, String> {
+    use gtk::glib::prelude::ObjectExt;
+    let display = gtk::gdk::Display::default()
+        .ok_or_else(|| "no GDK display; is the session still running?".to_owned())?;
+    // Which backend GTK actually picked decides whether any of this works:
+    // `GdkWaylandDisplay` is the native clipboard, `GdkX11Display` means we
+    // are inside XWayland and back to the bridge this change exists to avoid.
+    static BACKEND: std::sync::Once = std::sync::Once::new();
+    // Bound outside the macro: `tracing` has its own `display` in scope there.
+    let backend = display.type_().name();
+    BACKEND.call_once(|| {
+        tracing::debug!(backend, "GDK display backend");
+    });
+    gtk::Clipboard::default(&display)
+        .ok_or_else(|| "the display has no CLIPBOARD selection".to_owned())
+}
+
+/// Run `f` on the GTK main thread and hand back what it returned.
+///
+/// GTK is not thread safe, so every GTK call in this file goes through here.
+/// When the caller is already the main thread this runs inline, which is the
+/// common case for a synchronous command and the reason `f` must never park
+/// the thread waiting on another main-thread callback.
+#[cfg(target_os = "linux")]
+fn on_gtk_main<T, F>(app: &AppHandle, f: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.run_on_main_thread(move || {
+        let _ = tx.send(f());
+    })
+    .map_err(|e| e.to_string())?;
+    // Inline execution has already sent by the time we get here; a genuine
+    // worker-thread caller waits for the main loop to pick the task up.
+    rx.recv_timeout(std::time::Duration::from_secs(5))
+        .map_err(|_| "the GTK main thread did not run the clipboard call".to_owned())?
 }
 
 /// Reset the reconnect backoff and retry immediately.

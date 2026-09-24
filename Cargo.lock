@@ -2123,6 +2123,7 @@ dependencies = [
  "boundary-provision",
  "bytes",
  "crossbeam-channel",
+ "gtk",
  "limb-core",
  "os_info",
  "parking_lot",

@@ -64,6 +64,16 @@ uuid = { workspace = true }
 parking_lot = { workspace = true }
 crossbeam-channel = "0.5"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# GNOME/Mutter advertises no `ext-data-control` or `wlr-data-control` global, so
+# `arboard` (behind tauri-plugin-clipboard-manager) always falls back to X11 and
+# the clipboard ends up owned by an XWayland client inside a Wayland-native app.
+# Mutter re-arbitrates that bridge on focus, which is exactly when the session
+# syncs, so pastes landed only sometimes. GTK's own clipboard is the focused
+# Wayland client's clipboard, so it needs no bridge. Versions track what tauri
+# already resolves (gtk 0.18 / gdk 0.18), so no second GTK enters the graph.
+gtk = "0.18"
+
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-single-instance = "2"
 tauri-plugin-global-shortcut = "2"
