@@ -157,6 +157,16 @@ pub fn client_blocks(opts: &ResolvedOptions, selected: SecurityProtocol) -> Clie
                     // records the 2020-08-17 erratum saying the flag is
                     // unused and must be ignored; we set it because every
                     // client does and a server that reads it expects it.
+                    //
+                    // Nothing else is declared here on purpose. `cliprdr`
+                    // needs `CHANNEL_FLAG_SHOW_PROTOCOL` on each of its
+                    // channel PDUs to be answered by Windows, and that is a
+                    // different field in a different structure
+                    // (`crates/rdp-pdu/src/vc/static_vc.rs`, set in
+                    // `channels/cliprdr.rs`). Naming the lookalike
+                    // `CHANNEL_OPTION_SHOW_PROTOCOL` here was tried against a
+                    // Windows 11 host and changed nothing, which is what
+                    // 2.2.1.3.4.1 predicts.
                     options: rdp_pdu::gcc::client::channel_option::INITIALIZED,
                 })
                 .collect(),
@@ -393,6 +403,16 @@ async fn channel_connection<S: AsyncRead + AsyncWrite + Unpin>(
     // read (PRDRDP/03 §3.3: pipelined, confirms accepted in any order, one
     // timeout for the set). On a link with 100 ms of latency a four channel
     // session waits 100 ms rather than 400.
+    // The whole map, once, because a cliprdr message that goes to the wrong
+    // static channel is indistinguishable in every other log line from one the
+    // server ignored.
+    tracing::debug!(
+        io = channels.io_channel_id,
+        user = channels.user_channel_id,
+        message = ?channels.message_channel_id,
+        statics = ?channels.statics,
+        "the channel map"
+    );
     let wanted = channels.join_order();
     let mut out = Vec::new();
     for &channel_id in &wanted {

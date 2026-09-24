@@ -43,7 +43,7 @@
 use rdp_pdu::{PduError, Reader, Writer};
 use remote_core::SessionEvent;
 
-use crate::channels::{encode_channel_pdu, ChannelCtx, Outbox};
+use crate::channels::{encode_channel_pdu_with, ChannelCtx, Outbox};
 use crate::error::{RdpError, Result};
 
 /// `msgType` (MS-RDPECLIP 2.2.1).
@@ -221,6 +221,11 @@ impl Cliprdr {
                     // The server could not take our offer. Not fatal: the
                     // user's next copy raises a new one.
                     tracing::debug!("the server refused a clipboard format list");
+                } else {
+                    // Worth a line of its own: silence here was for a long
+                    // time indistinguishable from a server that had stopped
+                    // speaking to us altogether.
+                    tracing::debug!("the server accepted our clipboard format list");
                 }
                 Ok(())
             }
@@ -371,6 +376,11 @@ impl Cliprdr {
                 );
             }
         };
+        tracing::debug!(
+            requested,
+            chars = text.chars().count(),
+            "answering the server's request for our clipboard text"
+        );
         // `CF_UNICODETEXT` is UTF-16LE with a NUL terminator
         // (MS-RDPECLIP 2.2.5.2). `CF_TEXT` is the server's ANSI code page,
         // which we have no way to know, so we only ever answer the Unicode
@@ -439,6 +449,11 @@ impl Cliprdr {
         out: &mut Outbox,
     ) -> Result<()> {
         self.local = Some(text.to_owned());
+        tracing::debug!(
+            chars = text.chars().count(),
+            ready = self.ready,
+            "announcing our clipboard text to the server"
+        );
         if !self.ready {
             // Nothing may go out before `CB_MONITOR_READY` (MS-RDPECLIP
             // 1.3.2.1). The text is kept, and the format list that follows
@@ -555,10 +570,11 @@ impl Cliprdr {
             w.u32(len);
             w.bytes(body);
         }
-        encode_channel_pdu(
+        encode_channel_pdu_with(
             ctx.user_channel_id,
             static_id,
             &self.scratch,
+            rdp_pdu::vc::static_vc::channel_flags::SHOW_PROTOCOL,
             &mut self.chunk,
             &mut out.frames,
         )
@@ -962,5 +978,58 @@ mod tests {
         assert_eq!(lf_to_crlf("a\r\nb"), "a\r\nb");
         assert_eq!(crlf_to_lf("a\r\nb"), "a\nb");
         assert_eq!(crlf_to_lf(&lf_to_crlf("a\nb\nc")), "a\nb\nc");
+    }
+    /// Every `cliprdr` frame carries `CHANNEL_FLAG_SHOW_PROTOCOL`.
+    ///
+    /// Not a style preference. A Windows host completed the capability
+    /// exchange, sent `CB_MONITOR_READY`, and then ignored a byte for byte
+    /// correct `CB_FORMAT_LIST` for as long as the channel header carried
+    /// only `FIRST|LAST`: no `CB_FORMAT_LIST_RESPONSE`, no format list of its
+    /// own, both directions dead while `drdynvc` worked on the same
+    /// transport. FreeRDP sets the flag on any channel declared with
+    /// `CHANNEL_OPTION_SHOW_PROTOCOL` (`freerdp_channel_send`), `cliprdr` is
+    /// such a channel, and setting it is what made the same host answer.
+    /// Dropping it again silently breaks copy and paste against Windows, so
+    /// it is asserted on the wire rather than trusted to a comment.
+    #[test]
+    fn every_cliprdr_frame_shows_the_protocol() {
+        use rdp_pdu::io::Decode;
+        use rdp_pdu::mcs::DomainMcsPdu;
+        use rdp_pdu::vc::static_vc::{channel_flags, ChannelPduHeader};
+        use rdp_pdu::x224;
+
+        let mut clip = Cliprdr::new();
+        let mut out = Outbox::new();
+        clip.local = Some("hello".to_owned());
+        clip.message(
+            &from_server(msg_type::MONITOR_READY, 0, &[]),
+            1005,
+            ctx(),
+            &mut out,
+        )
+        .expect("monitor ready");
+
+        assert_eq!(out.frames.len(), 2, "capabilities then format list");
+        for frame in &out.frames {
+            let mut r = Reader::new(frame);
+            let mut body = x224::read_data_tpdu(&mut r).expect("x224");
+            let DomainMcsPdu::SendDataRequest { payload, .. } =
+                DomainMcsPdu::decode(&mut body).expect("mcs")
+            else {
+                panic!("not a send data request");
+            };
+            let mut r = Reader::new(payload.as_slice());
+            let header = ChannelPduHeader::decode(&mut r).expect("channel header");
+            assert!(
+                header.flags & channel_flags::SHOW_PROTOCOL != 0,
+                "a cliprdr frame went out with flags {:#x}, which Windows ignores",
+                header.flags
+            );
+            assert!(
+                header.flags & channel_flags::FIRST != 0 && header.flags & channel_flags::LAST != 0,
+                "a one chunk PDU must still set FIRST and LAST, got {:#x}",
+                header.flags
+            );
+        }
     }
 }

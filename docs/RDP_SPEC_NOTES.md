@@ -311,6 +311,49 @@ exactly the weakness that hid both planar faults: our encoder made the same
 assumption as our decoder, so the round trip agreed with itself at every colour
 loss level while the picture was wrong.
 
+### 1.9 SETTLED: Windows discards a `cliprdr` PDU without `CHANNEL_FLAG_SHOW_PROTOCOL`
+
+`crates/rdp-core/src/channels/cliprdr.rs`, `send_header`.
+`crates/rdp-pdu/src/vc/static_vc.rs`, `channel_flags::SHOW_PROTOCOL`.
+
+**What was believed.** `CHANNEL_FLAG_SHOW_PROTOCOL` (`0x00000010` in
+`CHANNEL_PDU_HEADER.flags`, MS-RDPBCGR 2.2.6.1.1) only decides whether the
+channel PDU header is handed to the application endpoint or stripped before it
+gets there. This crate parses the header either way, so the constant carried a
+comment calling it "tolerated and ignored", and every outbound static channel
+PDU went out with `FIRST|LAST` and nothing else.
+
+**What is true.** That reading holds for what we receive and is wrong for what
+we send. A Windows 11 host completes the whole clipboard handshake regardless:
+it joins the channel, sends `CB_CLIP_CAPS` and then `CB_MONITOR_READY`. It then
+discards every `cliprdr` PDU whose header does not set the flag, without an
+error and without closing the channel. No `CB_FORMAT_LIST_RESPONSE` comes back,
+the server never announces its own formats, so neither direction of copy and
+paste works. `drdynvc` is unaffected on the same transport, which is what makes
+the failure look like a clipboard bug rather than a channel one.
+
+**How we know.** Against one Windows 11 host, with a `CB_FORMAT_LIST`
+byte identical in both runs (`02000000 06000000 0d000000 0000`, announcing
+`CF_UNICODETEXT` with an empty long name) on the correct channel, the only
+variable was the header flags. With `0x00000003` the server sent nothing on
+`cliprdr` after `CB_MONITOR_READY` for the life of the session. With
+`0x00000013` it answered `CB_FORMAT_LIST_RESPONSE` within 18 ms, then announced
+its own five formats on the next copy, and both directions worked. FreeRDP was
+the control: it moved the clipboard on the same host in the same session, and
+`freerdp_channel_send` sets this flag for any channel declared with
+`CHANNEL_OPTION_SHOW_PROTOCOL`, which `cliprdr` is for FreeRDP and for mstsc.
+
+**Not to be confused with** `CHANNEL_OPTION_SHOW_PROTOCOL` (`0x00200000` in
+`CHANNEL_DEF.options`, MS-RDPBCGR 2.2.1.3.4.1), which is a different field in a
+different structure, sent once at connect time rather than on every PDU.
+Declaring that one was tried against the same host and changed nothing, which
+is what 2.2.1.3.4.1 predicts when it says the server ignores it. The names are
+close enough that `connection/mcs.rs` carries a comment pointing here.
+
+`every_cliprdr_frame_shows_the_protocol` asserts the flag on real encoded
+frames, because a reader who trusts the old comment would otherwise delete it
+and break copy and paste against Windows with no test to say so.
+
 ## 2. Confirmed errors in the design documents
 
 Each of these was found by implementing against the document, and each is a case

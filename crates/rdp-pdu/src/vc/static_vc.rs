@@ -205,12 +205,25 @@ impl Encode for ChannelChunk<'_> {
 /// `rdp-core`'s job, not this function's.
 #[must_use]
 pub fn chunk_channel_pdu(payload: &[u8], chunk_size: usize) -> ChannelChunks<'_> {
+    chunk_channel_pdu_with(payload, chunk_size, 0)
+}
+
+/// [`chunk_channel_pdu`], with `extra` OR'd into every chunk's flags.
+///
+/// The only caller that needs this is `cliprdr`, and the reason is empirical:
+/// a Windows host answered FreeRDP's format list and ignored ours, and
+/// FreeRDP sets `CHANNEL_FLAG_SHOW_PROTOCOL` on a channel it declared
+/// `CHANNEL_OPTION_SHOW_PROTOCOL` for (`freerdp_channel_send`), which was the
+/// last difference left between the two on the wire.
+#[must_use]
+pub fn chunk_channel_pdu_with(payload: &[u8], chunk_size: usize, extra: u32) -> ChannelChunks<'_> {
     ChannelChunks {
         total: payload.len(),
         rest: payload,
         chunk_size: chunk_size.clamp(MIN_VC_CHUNK_SIZE, MAX_VC_CHUNK_SIZE),
         first: true,
         done: false,
+        extra,
     }
 }
 
@@ -222,6 +235,7 @@ pub struct ChannelChunks<'a> {
     chunk_size: usize,
     first: bool,
     done: bool,
+    extra: u32,
 }
 
 impl<'a> Iterator for ChannelChunks<'a> {
@@ -234,7 +248,7 @@ impl<'a> Iterator for ChannelChunks<'a> {
         let take = self.rest.len().min(self.chunk_size);
         let (head, tail) = self.rest.split_at(take);
         self.rest = tail;
-        let mut flags = 0;
+        let mut flags = self.extra;
         if self.first {
             flags |= channel_flags::FIRST;
             self.first = false;

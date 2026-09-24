@@ -44,7 +44,7 @@ pub mod rdpsnd;
 
 use bytes::Bytes;
 use rdp_pdu::vc::static_vc::{
-    chunk_channel_pdu, ChannelPduHeader, ChannelReassembler, CHANNEL_CHUNK_LENGTH,
+    chunk_channel_pdu_with, ChannelPduHeader, ChannelReassembler, CHANNEL_CHUNK_LENGTH,
 };
 use rdp_pdu::{Decode, Encode, Reader, Writer};
 use remote_core::SessionEvent;
@@ -371,13 +371,29 @@ pub fn encode_channel_pdu(
     scratch: &mut Vec<u8>,
     out: &mut Vec<Bytes>,
 ) -> Result<()> {
+    encode_channel_pdu_with(user_channel_id, channel_id, payload, 0, scratch, out)
+}
+
+/// [`encode_channel_pdu`], with `extra` OR'd into every chunk's header flags.
+///
+/// # Errors
+///
+/// As [`encode_channel_pdu`].
+pub fn encode_channel_pdu_with(
+    user_channel_id: u16,
+    channel_id: u16,
+    payload: &[u8],
+    extra: u32,
+    scratch: &mut Vec<u8>,
+    out: &mut Vec<Bytes>,
+) -> Result<()> {
     // `scratch` is the caller's, and it is the same buffer for every chunk of
     // every PDU on the channel: `send_data_request` copies it into the frame
     // it returns, so it is free to be reused as soon as that call returns.
     // The one allocation left per frame is the frame itself, which is the
     // value handed to the writer task.
     scratch.reserve(ChannelPduHeader::LEN + CHANNEL_CHUNK_LENGTH);
-    for chunk in chunk_channel_pdu(payload, CHANNEL_CHUNK_LENGTH) {
+    for chunk in chunk_channel_pdu_with(payload, CHANNEL_CHUNK_LENGTH, extra) {
         scratch.clear();
         chunk.encode_checked(&mut Writer::new(scratch))?;
         out.push(send_data_request(user_channel_id, channel_id, scratch)?);
