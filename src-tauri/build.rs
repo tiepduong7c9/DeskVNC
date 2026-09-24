@@ -161,6 +161,9 @@ fn main() {
             "set_always_refresh",
             "set_prefer_scancodes",
             "send_clipboard",
+            // Answers a `clipboard-notify`; without it a Windows server's
+            // announced text is never fetched (MS-RDPECLIP is request based).
+            "request_remote_clipboard",
             // OS clipboard, natively. `navigator.clipboard` is gesture-gated in
             // the webview, so remote → local text can never land through it.
             "set_local_clipboard",

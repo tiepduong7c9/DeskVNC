@@ -27,6 +27,7 @@ import {
   parseFrameMessage,
   type FrameMessage,
 } from "../render/frameProtocol";
+import { PREF_CLIPBOARD_AUTO, readBoolPref } from "../lib/prefs";
 import { encodeTerminalInput, encodeTerminalResize } from "../render/input";
 import { initTrace, traceMark } from "../render/trace";
 import type {
@@ -466,8 +467,15 @@ export function useSession(
           setRemoteClipboard(ev.text);
           break;
         case "clipboard-notify":
-          // Formats only, no data. The session already answers a text notify
-          // with a request, so the text follows as its own `clipboard-text`.
+          // Formats only, no data, and nothing else answers it. RDP's
+          // `cliprdr` announces the remote's formats and then waits to be
+          // asked (MS-RDPECLIP is request based), so the ask has to happen
+          // here or remote-to-local text never arrives. The reply comes back
+          // as its own `clipboard-text`. VNC never raises this: `ServerCutText`
+          // carries the text already.
+          if (readBoolPref(PREF_CLIPBOARD_AUTO, true)) {
+            void safeInvoke("request_remote_clipboard", { sessionId: sid() }, null);
+          }
           break;
         case "bell":
           setBellTick((n) => n + 1);

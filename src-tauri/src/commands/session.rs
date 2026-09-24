@@ -1726,6 +1726,31 @@ pub async fn send_clipboard(
     send_command(&state, &session_id, ClientCommand::ClipboardText(text)).await
 }
 
+/// Ask the remote for the text it just announced.
+///
+/// MS-RDPECLIP is offer-and-request: a Windows server announces its formats
+/// with `CB_FORMAT_LIST` and sends nothing until asked, so `cliprdr` raises
+/// `SessionEvent::ClipboardNotify` and stops there on purpose (PRDRDP/05
+/// §4.3: pulling every remote copy unasked is how a session steals a
+/// clipboard). Something has to do the asking, and until now nothing did
+/// outside the agent plane, so remote-to-local text never arrived over RDP at
+/// all. RFB has no equivalent gap: `ServerCutText` pushes the text itself,
+/// which is why the same session worked over VNC.
+#[tauri::command]
+pub async fn request_remote_clipboard(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<(), String> {
+    tracing::debug!("asking the remote for its clipboard text");
+    send_command(
+        &state,
+        &session_id,
+        // `1` is `FORMAT_TEXT`, the only format either protocol carries here.
+        ClientCommand::ClipboardRequest { formats: 1 },
+    )
+    .await
+}
+
 /// Write text the remote copied into the OS clipboard.
 ///
 /// This deliberately does not go through `navigator.clipboard` in the webview:

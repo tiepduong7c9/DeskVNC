@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-request-remote-clipboard"
+description = "Enables the request_remote_clipboard command without any pre-configured scope."
+commands.allow = ["request_remote_clipboard"]
+
+[[permission]]
+identifier = "deny-request-remote-clipboard"
+description = "Denies the request_remote_clipboard command without any pre-configured scope."
+commands.deny = ["request_remote_clipboard"]

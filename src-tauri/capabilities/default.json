@@ -76,6 +76,7 @@
     "allow-set-always-refresh",
     "allow-set-prefer-scancodes",
     "allow-send-clipboard",
+    "allow-request-remote-clipboard",
     "allow-set-local-clipboard",
     "allow-read-local-clipboard",
     "allow-reconnect-now",
