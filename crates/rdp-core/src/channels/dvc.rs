@@ -915,11 +915,15 @@ mod tests {
         );
     }
 
-    /// One EGFX message inside an uncompressed `RDP_SEGMENTED_DATA` envelope.
-    fn egfx_message(pdu: &rdp_pdu::vc::egfx::EgfxPdu<'_>) -> Vec<u8> {
+    /// Some EGFX messages inside one uncompressed `RDP_SEGMENTED_DATA`
+    /// envelope, which is the server to client framing (`DvcMux::flush`
+    /// explains why the client to server direction has none).
+    fn egfx_message(pdus: &[rdp_pdu::vc::egfx::EgfxPdu<'_>]) -> Vec<u8> {
         let mut out = vec![0xE0, 0x04];
-        pdu.encode_checked(&mut Writer::new(&mut out))
-            .expect("encodes");
+        for pdu in pdus {
+            pdu.encode_checked(&mut Writer::new(&mut out))
+                .expect("encodes");
+        }
         out
     }
 
@@ -1096,10 +1100,7 @@ mod tests {
     /// this is about.
     #[test]
     fn a_whole_message_arrives_as_one_data_pdu_and_a_split_one_is_reassembled() {
-        // Server to client, so the envelope is still there: descriptor
-        // SINGLE then the RDP 8.0 flags byte (`egfx_message`).
-        let mut body = vec![0xE0, 0x04];
-        for pdu in [
+        let confirm = egfx_message(&[
             rdp_pdu::vc::egfx::EgfxPdu::CapsConfirm {
                 capset: Capset::new(caps_version::V8_1, &[0, 0, 0, 0]),
             },
@@ -1108,11 +1109,7 @@ mod tests {
                 frame_id: 4,
             },
             rdp_pdu::vc::egfx::EgfxPdu::EndFrame { frame_id: 4 },
-        ] {
-            pdu.encode_checked(&mut Writer::new(&mut body))
-                .expect("encodes");
-        }
-        let confirm = body;
+        ]);
 
         // One `DYNVC_DATA` carrying the whole message.
         let (mut mux, channel_id) = opened();

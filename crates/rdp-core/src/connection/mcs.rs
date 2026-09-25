@@ -106,56 +106,23 @@ pub struct McsConnected {
     pub skipped_channel_joins: bool,
 }
 
-/// The environment variable that turns the graphics pipeline advertisement on.
-pub const GFX_ENV: &str = "DESKVNC_RDP_GRAPHICS_PIPELINE";
-
-/// `earlyCapabilityFlags` for the Client Core Data, and why the graphics
-/// pipeline bit is not in the default set.
+/// `earlyCapabilityFlags` for the Client Core Data.
 ///
-/// The two servers we have tested disagree about
-/// `RNS_UD_CS_SUPPORT_DYNVC_GFX_PROTOCOL` as flatly as two servers can.
-/// gnome-remote-desktop refuses a client that leaves it clear, closing the
-/// connection with "Client did not advertise support for the Graphics
-/// Pipeline". Windows does the opposite: it accepts the bit, opens the
-/// channel, and then ends the session with
-/// `ERRINFO_GRAPHICSSUBSYSTEMFAILED` once we answer with an
-/// `RDPGFX_CAPS_ADVERTISE`. Setting it by default traded a working Windows
-/// session for a GNOME one, so until the Windows side is understood it is a
-/// switch rather than a default and neither host can break the other
-/// (`docs/RDP_SPEC_NOTES.md` §1.11).
-fn early_capabilities(opts: &ResolvedOptions) -> Option<u16> {
-    // The host setting is the answer; the environment variable stays as a
-    // way to turn it on for a host that has not been configured, which is
-    // what a diagnostic run is.
-    let graphics = opts.graphics_pipeline || graphics_pipeline_requested();
-    if graphics {
-        tracing::info!(
-            host_setting = opts.graphics_pipeline,
-            env = graphics_pipeline_requested(),
-            "advertising the graphics pipeline"
-        );
-    }
-    early_capabilities_with(graphics)
-}
-
-/// The decision itself, with the environment already read.
+/// Every capability this client implements, plus
+/// `RNS_UD_CS_SUPPORT_DYNVC_GFX_PROTOCOL` when the host asks for it.
 ///
-/// Split out because the environment is process wide and the tests run in
-/// parallel: a test that set the variable would decide what an unrelated test
-/// advertised. Same shape as `select_protocol` and `autodetect_step`.
-const fn early_capabilities_with(graphics: bool) -> Option<u16> {
+/// That bit is the host's to set because the two server families want
+/// opposite answers: gnome-remote-desktop paints through EGFX and refuses a
+/// client that leaves it clear, and a Windows host paints through the legacy
+/// bitmap path and is better off not being asked
+/// (`remote_core::RdpOptions::graphics_pipeline`,
+/// `docs/RDP_SPEC_NOTES.md` §1.11).
+const fn early_capabilities(graphics: bool) -> Option<u16> {
     if graphics {
         Some(early_capability_flags::DEFAULT | early_capability_flags::SUPPORT_DYNVC_GFX_PROTOCOL)
     } else {
         Some(early_capability_flags::DEFAULT)
     }
-}
-
-/// True when the switch is set to `1`. Anything else, including unset and
-/// including `true`, leaves the advertisement off: a diagnostic that turns
-/// itself on by accident is worse than one nobody can find.
-fn graphics_pipeline_requested() -> bool {
-    matches!(std::env::var(GFX_ENV).as_deref(), Ok("1"))
 }
 
 /// Build the `TS_UD_CS_*` blocks we send in the Connect Initial
@@ -194,7 +161,7 @@ pub fn client_blocks(opts: &ResolvedOptions, selected: SecurityProtocol) -> Clie
             desktop_orientation: Some(0),
             desktop_scale_factor: Some(opts.scale_factor),
             device_scale_factor: Some(device_scale_factor(opts.scale_factor)),
-            early_capability_flags: early_capabilities(opts),
+            early_capability_flags: early_capabilities(opts.graphics_pipeline),
             ..ClientCoreData::default()
         }),
         // Both words zero is the correct "I am using TLS or CredSSP" signal
@@ -677,10 +644,6 @@ mod tests {
     /// without it, so which of the two this is has to be a property of the
     /// host rather than of the build.
     ///
-    /// Only the positive direction is asserted here: `GFX_ENV` also turns the
-    /// bit on, and a developer running the suite with it set would otherwise
-    /// see a failure that says nothing about their change. The negative
-    /// direction is `early_capabilities_with`, which reads no environment.
     #[test]
     fn a_host_that_asks_for_the_graphics_pipeline_advertises_it() {
         let mut c = ConnectOptions::rdp("host", 3389);
@@ -701,20 +664,21 @@ mod tests {
         );
     }
 
-    /// Advertising the graphics pipeline by default cost a working Windows
-    /// session once already: the host accepted the bit, opened the channel
-    /// and then ended the session with `ERRINFO_GRAPHICSSUBSYSTEMFAILED`.
-    /// The bit stays out of the default set until that is understood.
+    /// The bit is out of the default set, so a host that was never
+    /// configured advertises exactly what this client implements. Windows is
+    /// that host: it paints through the legacy bitmap path and asking it for
+    /// EGFX today gets as far as a ClearCodec cache miss
+    /// (`docs/RDP_SPEC_NOTES.md` §1.20).
     #[test]
     fn the_graphics_pipeline_is_not_advertised_unless_it_is_asked_for() {
-        let off = early_capabilities_with(false).expect("flags");
+        let off = early_capabilities(false).expect("flags");
         assert_eq!(
             off & early_capability_flags::SUPPORT_DYNVC_GFX_PROTOCOL,
             0,
             "the default advertisement must leave the graphics pipeline clear"
         );
 
-        let on = early_capabilities_with(true).expect("flags");
+        let on = early_capabilities(true).expect("flags");
         assert_eq!(
             on & early_capability_flags::SUPPORT_DYNVC_GFX_PROTOCOL,
             early_capability_flags::SUPPORT_DYNVC_GFX_PROTOCOL

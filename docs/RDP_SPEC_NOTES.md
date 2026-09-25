@@ -413,11 +413,11 @@ failed:
   the graphics channel. Since that server paints only through EGFX, the result
   is a connected session showing a black screen.
 
-So the flag is a switch rather than a default. `mcs::GFX_ENV`
-(`DESKVNC_RDP_GRAPHICS_PIPELINE=1`) sets it, and nothing else does, so
-testing one of these two servers cannot break the other. Shipping it on
-traded a working Windows session for a GNOME one, which is a trade nobody
-asked for.
+So the flag is a per host setting rather than a default:
+`remote_core::RdpOptions::graphics_pipeline`, off unless the host editor
+turns it on. Shipping it on traded a working Windows session for a GNOME
+one, which is a trade nobody asked for, and the two families want opposite
+answers permanently rather than until something is fixed.
 
 **The GNOME half of this entry is closed.** That server was not waiting on
 the graphics channel at all (section 1.12), and once the four faults of

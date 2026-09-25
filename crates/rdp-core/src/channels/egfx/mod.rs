@@ -211,7 +211,6 @@ impl Egfx {
         events: &mut Vec<SessionEvent>,
         replies: &mut ReplyBuf,
     ) -> Result<()> {
-        tracing::debug!(len = message.len(), "a graphics message arrived");
         // The whole `RDP_SEGMENTED_DATA` envelope goes to the decompressor,
         // descriptor byte and all. It walks the segments itself, and it has
         // to: an uncompressed segment still feeds the history window that the
@@ -234,14 +233,12 @@ impl Egfx {
         });
         let result = match decompressed {
             Ok(()) => {
-                // Compressed or not, and how much came out. `rdp-codecs`'
-                // ZGFX token table is a reconstruction rather than a
-                // transcription (`docs/RDP_SPEC_NOTES.md` §1.1), and a
-                // reconstruction that is subtly wrong produces a short buffer
-                // rather than an error: the first symptom is whatever parses
-                // the output complaining that it was truncated. Comparing the
-                // two lengths is what tells a decompression fault from a
-                // command this client misread.
+                // Both lengths, because a decompressor that is subtly wrong
+                // produces a short buffer rather than an error and the first
+                // symptom is whatever parses the output calling it truncated.
+                // `rdp-codecs`' ZGFX token table is a reconstruction rather
+                // than a transcription (`docs/RDP_SPEC_NOTES.md` §1.1), so
+                // that is a real possibility and this is how it would show.
                 tracing::debug!(
                     wire = message.len(),
                     decompressed = buf.len(),
