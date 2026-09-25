@@ -428,13 +428,17 @@ an RDSTLS exchange it did not speak, a `WIRE_TO_SURFACE_2` it refused
 outright, an EGFX reply it wrapped in an envelope no server expects, and a
 `bitmapDataLength` it did not read. None of those was the flag.
 
-**The Windows half is still open and is now untested rather than known
-broken.** That host ended the session with `ERRINFO_GRAPHICSSUBSYSTEMFAILED`
-on an `RDPGFX_CAPS_ADVERTISE` that carried a segment envelope it should not
-have had (section 1.15). No Windows host has been tried since that was
-fixed, so the failure may already be gone. Until one is, this stays open:
-closing it on the reasoning alone is how the advertisement got shipped on by
-default the first time.
+**The Windows half is closed too, and it was two faults rather than one.**
+The advertisement carried a segment envelope no server expects (section
+1.15), and behind that an empty cache import offer Windows will not accept
+(section 1.18). The second was invisible until the first was fixed, because
+a server that refuses the advertisement never gets far enough to refuse what
+follows it. With both gone, a Windows host confirms capability set 8.1,
+opens the display control channel, takes a monitor layout, issues an auto
+reconnect cookie and resets the graphics pipeline.
+
+What stops a Windows EGFX session now is not the pipeline. It is section
+1.19: a codec.
 
 ### 1.12 SETTLED: gnome-remote-desktop hands the session over by redirecting to itself
 
@@ -717,3 +721,37 @@ The mock server waited for the offer before sending its first frame, so a
 correct client hung where a wrong one had passed. It now sends the frame
 after the confirm, which is what gnome-remote-desktop does: reset, create,
 map, draw, with no cache exchange anywhere in it.
+
+### 1.19 OPEN: the ClearCodec RLEX segment byte is split the wrong way
+
+`crates/rdp-codecs/src/clear.rs`, `rlex_code`.
+
+**What was believed.** That the first byte of an RLEX segment is seven bits
+of palette stop index and one bit of suite depth. That function says of
+itself that it is "not transcribed from the specification" and is "the
+reading most likely to be corrected by the MS-RDPEGFX §4 vector", reasoning
+that `paletteCount` reaches 127 and so needs seven bits.
+
+**What is true.** Not yet known, but not this. A Windows host draws its first
+frame through ClearCodec and the decoder refuses it:
+
+```
+the clearcodec decoder refused a 64x22 egfx rectangle of 35 bytes:
+input truncated in clearcodec rlex
+```
+
+Thirty five bytes for a 64x22 rectangle is a palette and a handful of
+segments, so the walk is running off the end within a few segments of the
+start. A wrong split makes every run length read at the wrong offset, which
+is exactly the shape of that failure.
+
+The reasoning for seven bits is not wrong about `paletteCount`; it may be
+wrong that the same field is what the segment byte indexes. A four and four
+split, which PRDRDP/04 §4.8.4 rules out on the same ground, would address
+only sixteen entries, and a decoder that never sees a palette larger than
+sixteen would not notice.
+
+Settling this needs the bytes: 35 of them, with a known `paletteCount` and a
+known 64x22 output, is small enough to solve completely rather than guess at.
+`docs/RDP_SPEC_NOTES.md` §1.1 records the same class of problem for the ZGFX
+token table, which turned out not to be on any path at all; this one is.
