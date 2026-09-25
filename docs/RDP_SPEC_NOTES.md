@@ -354,6 +354,35 @@ close enough that `connection/mcs.rs` carries a comment pointing here.
 frames, because a reader who trusts the old comment would otherwise delete it
 and break copy and paste against Windows with no test to say so.
 
+### 1.10 SETTLED: gnome-remote-desktop waits for an answer to 2.2.14
+
+`crates/rdp-core/src/connection/activate.rs`, `autodetect_step`.
+
+**What was believed.** Network characteristics detection is optional and best
+effort, so a client that never answers costs itself nothing: the server falls
+back to its own connection type hint and carries on. The code said so and
+logged the phase instead of answering it.
+
+**What is true.** That holds for Windows and not for gnome-remote-desktop,
+which sends the RTT request and the bandwidth start, payload and stop, and
+then stops. No Demand Active follows. The connection dies after the Client
+Info PDU with nothing on the wire to explain it, and the client's own timeout
+is the only thing that ends the wait.
+
+**How we know.** Against gnome-remote-desktop on Fedora, the sequence ran to
+`CB_MONITOR_READY` equivalent and then produced exactly two auto detect PDUs
+and silence. Answering them took the same connection to `licensing complete`
+and a Demand Active. Windows was unaffected either way, which is what makes
+the old reading look correct for as long as Windows is the only server tried.
+
+Two details of that server are worth recording because they are not what
+MS-RDPBCGR 2.2.14 leads you to expect. It uses the **continuous** phase
+request codes during the connect sequence, not the connect time ones, so a
+client that switches on the phase rather than the measurement answers none of
+them. And it sends the bandwidth triplet more than once before moving on.
+`autodetect_step` keys on the measurement and ignores the phase for that
+reason.
+
 ## 2. Confirmed errors in the design documents
 
 Each of these was found by implementing against the document, and each is a case

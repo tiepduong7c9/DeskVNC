@@ -49,6 +49,7 @@ use rdp_pdu::rdp::{
     FontListPdu, IoPdu, IoPduContext, LicenseMessage, LicensePdu, SharePdu, SlowPathClass,
     SynchronizePdu,
 };
+use rdp_pdu::rdp::{AutoDetectBody, AutoDetectKind, AutoDetectPdu, AutoDetectResponse};
 use rdp_pdu::{codes, x224, Reader};
 use remote_core::{Credentials, SessionEvent};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -208,6 +209,96 @@ fn looks_like_share_control(payload: &[u8]) -> bool {
 /// Which [`SlowPathClass`] a PDU belongs to, decided from the channel it
 /// arrived on and the phase we are in. See this module's documentation for why
 /// it is decided that way and not by looking at the bytes.
+/// What a Bandwidth Measure Start opened, until its Stop closes it.
+///
+/// `bytes` counts only the filler the server sent, which is what it is asking
+/// us to measure (MS-RDPBCGR 2.2.14.1.3).
+struct BandwidthMeasure {
+    started: std::time::Instant,
+    bytes: u32,
+}
+
+/// Decide what one auto detect PDU deserves in reply, and keep the bandwidth
+/// measurement while it is open.
+///
+/// Separate from the activation loop and taking no stream, for the same
+/// reason [`super::negotiate::select_protocol`] is: every branch is then a
+/// unit test over a decoded structure rather than a socket.
+fn autodetect_step(
+    pdu: &AutoDetectPdu<'_>,
+    bandwidth: &mut Option<BandwidthMeasure>,
+) -> Option<AutoDetectResponse<'static>> {
+    let (kind, phase) = pdu.classify();
+    let sequence = pdu.sequence_number;
+    tracing::debug!(
+        stage = %ConnectStage::ConnectTimeAutoDetect,
+        ?kind,
+        ?phase,
+        sequence,
+        "connect time auto detect"
+    );
+    match kind {
+        // 2.2.14.1.1: header only, answered at once. The server times our
+        // turnaround, so anything done between reading this and writing the
+        // answer is measured as the network's latency.
+        AutoDetectKind::RttMeasure => Some(AutoDetectResponse::rtt(sequence)),
+        AutoDetectKind::BandwidthStart => {
+            *bandwidth = Some(BandwidthMeasure {
+                started: std::time::Instant::now(),
+                bytes: 0,
+            });
+            None
+        }
+        // Only the filler counts. The six header bytes are ours to ignore:
+        // the server is measuring how fast its payload crossed, not how large
+        // its own framing is.
+        AutoDetectKind::BandwidthPayload => {
+            if let (Some(measure), AutoDetectBody::Payload(filler)) = (bandwidth.as_mut(), pdu.body)
+            {
+                measure.bytes = measure
+                    .bytes
+                    .saturating_add(u32::try_from(filler.len()).unwrap_or(u32::MAX));
+            }
+            None
+        }
+        // 2.2.14.2.2. A stop with no start is answered with zeroes rather
+        // than dropped: the server is waiting on this sequence number, and a
+        // measurement it can discard beats a connection that never continues.
+        AutoDetectKind::BandwidthStop => {
+            let (time_delta, byte_count) = bandwidth.take().map_or((0, 0), |m| {
+                (
+                    u32::try_from(m.started.elapsed().as_millis()).unwrap_or(u32::MAX),
+                    m.bytes,
+                )
+            });
+            Some(AutoDetectResponse::bandwidth_results(
+                sequence, time_delta, byte_count,
+            ))
+        }
+        // The server reporting what it concluded, and the sync a client sends
+        // only on a reconnect. Neither is answered (2.2.14.1.4, 2.2.14.2.3).
+        AutoDetectKind::BandwidthResults
+        | AutoDetectKind::NetworkCharacteristicsResult
+        | AutoDetectKind::NetworkCharacteristicsSync
+        | AutoDetectKind::Unknown => None,
+    }
+}
+
+/// Frame one auto detect response for the channel it is answering on.
+///
+/// The response goes back where the request came from, which for the connect
+/// time sequence is the message channel rather than the I/O channel, and
+/// `AutoDetectResponse` writes its own `SEC_AUTODETECT_RSP` security header.
+fn autodetect_reply(
+    user_channel_id: u16,
+    channel_id: u16,
+    response: &AutoDetectResponse<'_>,
+) -> Result<Bytes> {
+    let mut bytes = Vec::with_capacity(response.size());
+    response.encode_checked(&mut Writer::new(&mut bytes))?;
+    send_data_request(user_channel_id, channel_id, &bytes)
+}
+
 fn classify(channel_id: u16, channels: &ChannelMap, phase: Phase, payload: &[u8]) -> SlowPathClass {
     let flags = peek_security_flags(payload).unwrap_or(0);
     let has = |flag: u16| flags & flag != 0;
@@ -531,6 +622,8 @@ pub async fn activate<S: AsyncRead + AsyncWrite + Unpin>(
     let mut phase = Phase::Licensing;
     let mut activated: Option<Activated> = None;
     let started = std::time::Instant::now();
+    // Set by a Bandwidth Measure Start and consumed by the matching Stop.
+    let mut bandwidth: Option<BandwidthMeasure> = None;
 
     loop {
         if started.elapsed() > ACTIVATION_TIMEOUT {
@@ -579,16 +672,25 @@ pub async fn activate<S: AsyncRead + AsyncWrite + Unpin>(
                     phase = Phase::Sharing;
                 }
             }
-            IoPdu::AutoDetect(_) => {
-                // MS-RDPBCGR 2.2.14 is optional and best effort: a server that
-                // gets no response uses its own default for the connection
-                // type hint. Answering needs the round trip measurement of
-                // PRDRDP/05 §6.1, which is not written, so the phase is named
-                // in the trace rather than answered wrongly.
-                tracing::debug!(
-                    stage = %ConnectStage::ConnectTimeAutoDetect,
-                    "connect time auto detect is not answered in this build"
-                );
+            IoPdu::AutoDetect(pdu) => {
+                // MS-RDPBCGR 2.2.14 reads as optional, and against Windows it
+                // is: no answer, and the server falls back to its own default
+                // for the connection type hint. gnome-remote-desktop does not.
+                // It sends the RTT request and the bandwidth pair and then
+                // waits, so a client that stays quiet here never sees a
+                // Demand Active and the connection stops dead after the
+                // Client Info PDU with nothing on the wire to explain it.
+                //
+                // The measurement is the client's to make and the arithmetic
+                // is trivial: time the gap the server asks us to time, count
+                // the bytes it sends inside it, and hand both back.
+                if let Some(response) = autodetect_step(&pdu, &mut bandwidth) {
+                    reply = Some(autodetect_reply(
+                        channels.user_channel_id,
+                        data.channel_id,
+                        &response,
+                    )?);
+                }
             }
             IoPdu::Heartbeat(_) => {
                 tracing::trace!("a heartbeat arrived during the connection sequence");
@@ -1074,5 +1176,121 @@ mod tests {
         // bitmap sets are the two it acts on first.
         assert!(sets.general().is_some());
         assert!(sets.bitmap().is_some());
+    }
+    /// gnome-remote-desktop waits for these, so silence is not an option.
+    ///
+    /// Against Windows an unanswered auto detect costs nothing: the server
+    /// falls back to its own connection type hint and sends the Demand
+    /// Active anyway. gnome-remote-desktop sends the RTT request and the
+    /// bandwidth pair and then stops, so a client that does not answer never
+    /// gets a Demand Active and the connection dies after the Client Info PDU
+    /// with nothing on the wire to say why. These are the four branches that
+    /// matter on that path.
+    #[test]
+    fn the_connect_time_auto_detect_sequence_is_answered() {
+        use rdp_pdu::rdp::control::autodetect;
+
+        let request = |request_type: u16, sequence_number: u16, body| AutoDetectPdu {
+            header_type_id: autodetect::TYPE_ID_REQUEST,
+            sequence_number,
+            request_type,
+            body,
+        };
+
+        // RTT: answered immediately, echoing the sequence number, which is
+        // the only thing a server matches the answer to.
+        let mut bandwidth = None;
+        let rtt = autodetect_step(
+            &request(autodetect::RTT_REQUEST_CONNECT, 7, AutoDetectBody::Empty),
+            &mut bandwidth,
+        )
+        .expect("an RTT request must be answered");
+        assert_eq!(rtt.pdu.sequence_number, 7);
+        assert_eq!(rtt.pdu.header_type_id, autodetect::TYPE_ID_RESPONSE);
+        assert!(bandwidth.is_none(), "an RTT request opens no measurement");
+
+        // Start, filler, stop: the results carry what the filler weighed.
+        assert!(
+            autodetect_step(
+                &request(
+                    autodetect::BANDWIDTH_START_CONNECT,
+                    8,
+                    AutoDetectBody::Empty
+                ),
+                &mut bandwidth,
+            )
+            .is_none(),
+            "a bandwidth start is not itself answered"
+        );
+        for _ in 0..3 {
+            assert!(
+                autodetect_step(
+                    &request(
+                        autodetect::BANDWIDTH_PAYLOAD,
+                        9,
+                        AutoDetectBody::Payload(Payload::new(&[0u8; 100])),
+                    ),
+                    &mut bandwidth,
+                )
+                .is_none(),
+                "filler is counted, not answered"
+            );
+        }
+        let stop = autodetect_step(
+            &request(
+                autodetect::BANDWIDTH_STOP_CONNECT,
+                10,
+                AutoDetectBody::Empty,
+            ),
+            &mut bandwidth,
+        )
+        .expect("a bandwidth stop must be answered");
+        assert_eq!(stop.pdu.sequence_number, 10);
+        match stop.pdu.body {
+            AutoDetectBody::Results { byte_count, .. } => assert_eq!(
+                byte_count, 300,
+                "three 100 byte fillers, and none of the six byte headers"
+            ),
+            other => panic!("expected Results, got {other:?}"),
+        }
+        assert!(
+            bandwidth.is_none(),
+            "the stop closes the measurement it answered"
+        );
+
+        // A stop with no start still gets an answer. The server is waiting on
+        // that sequence number and a zeroed measurement it can discard beats
+        // a connection that never continues.
+        let orphan = autodetect_step(
+            &request(
+                autodetect::BANDWIDTH_STOP_CONNECT,
+                11,
+                AutoDetectBody::Empty,
+            ),
+            &mut bandwidth,
+        )
+        .expect("an unmatched stop is still answered");
+        assert!(matches!(
+            orphan.pdu.body,
+            AutoDetectBody::Results {
+                time_delta: 0,
+                byte_count: 0
+            }
+        ));
+
+        // The server's own summary ends the exchange and is not answered.
+        assert!(autodetect_step(
+            &request(
+                autodetect::NETCHAR_RESULT_BASE_AVERAGE_RTT,
+                12,
+                AutoDetectBody::NetworkCharacteristics {
+                    base_rtt: Some(4),
+                    bandwidth: None,
+                    average_rtt: Some(4),
+                },
+            ),
+            &mut bandwidth,
+        )
+        .is_none());
     }
 }
