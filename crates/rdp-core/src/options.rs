@@ -125,6 +125,9 @@ pub struct ResolvedOptions {
     /// Whether this host may use the TLS 1.0 and 1.1 backend (R55). Never a
     /// request, only permission.
     pub legacy_tls: bool,
+    /// Whether to advertise the graphics pipeline to this host
+    /// (`RdpOptions::graphics_pipeline`).
+    pub graphics_pipeline: bool,
     /// Whether the X.224 Connection Request carries the `mstshash` cookie
     /// (PRDRDP/00 R29, off by default: it leaks the username in cleartext
     /// ahead of the TLS upgrade).
@@ -341,6 +344,7 @@ impl ResolvedOptions {
             scale_factor,
             nla: rdp.nla,
             legacy_tls: rdp.legacy_tls,
+            graphics_pipeline: rdp.graphics_pipeline,
             send_mstshash_cookie: rdp.send_mstshash_cookie,
             channels,
             quality: options.quality,

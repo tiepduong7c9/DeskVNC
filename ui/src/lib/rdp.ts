@@ -101,6 +101,12 @@ export interface RdpSettings {
    *  never turns itself on: a server cannot request the downgrade, only the
    *  person editing this profile can. */
   legacyTls: boolean;
+  /** Advertise the graphics pipeline (MS-RDPEGFX) to this host. Off by
+   *  default, and per host because the two server families disagree: a
+   *  gnome-remote-desktop session paints through EGFX and nothing else, and
+   *  refuses a client that does not advertise it, while a Windows host paints
+   *  through the legacy bitmap path and only reaches EGFX when asked. */
+  graphicsPipeline: boolean;
   colorDepth: RdpColorDepth;
   codecs: CodecSet;
   audio: AudioMode;
@@ -160,6 +166,7 @@ export function blankRdpSettings(): RdpSettings {
     domain: null,
     nla: "required",
     legacyTls: false,
+    graphicsPipeline: false,
     colorDepth: "auto",
     codecs: blankCodecSet(),
     audio: "play-locally",
@@ -180,7 +187,8 @@ export function blankRdpSettings(): RdpSettings {
 /** Every key this module owns, so anything else can be set aside verbatim. */
 const KNOWN_KEYS: readonly string[] = [
   "v", "clipboard", "microphone", "consoleSession", "restrictedAdmin",
-  "serverName", "domain", "nla", "legacyTls", "colorDepth", "codecs", "audio",
+  "serverName", "domain", "nla", "legacyTls", "graphicsPipeline", "colorDepth",
+  "codecs", "audio",
   "monitors", "resolution", "dynamicResolution", "keyboardLayout", "clientName",
   "performance", "gateway", "autologon", "kdcProxyUrl", "sendMstshashCookie",
   "allowAutoReconnect", "desktopScaleFactor",
@@ -314,6 +322,7 @@ export function parseRdpSettings(raw: string | null | undefined): RdpSettings | 
     // relevant: a typo must never relax network level authentication.
     nla: oneOf(o.nla, ["required", "allow-fallback"] as const, "required"),
     legacyTls: bool(o.legacyTls, false),
+    graphicsPipeline: bool(o.graphicsPipeline, false),
     colorDepth: oneOf(
       o.colorDepth,
       ["auto", "bpp15", "bpp16", "bpp24", "bpp32"] as const,

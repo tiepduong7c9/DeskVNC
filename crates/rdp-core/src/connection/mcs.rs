@@ -123,13 +123,16 @@ pub const GFX_ENV: &str = "DESKVNC_RDP_GRAPHICS_PIPELINE";
 /// session for a GNOME one, so until the Windows side is understood it is a
 /// switch rather than a default and neither host can break the other
 /// (`docs/RDP_SPEC_NOTES.md` §1.11).
-fn early_capabilities() -> Option<u16> {
-    let graphics = graphics_pipeline_requested();
+fn early_capabilities(opts: &ResolvedOptions) -> Option<u16> {
+    // The host setting is the answer; the environment variable stays as a
+    // way to turn it on for a host that has not been configured, which is
+    // what a diagnostic run is.
+    let graphics = opts.graphics_pipeline || graphics_pipeline_requested();
     if graphics {
         tracing::info!(
-            "advertising the graphics pipeline because {GFX_ENV} is set: this is a diagnostic \
-             switch and is known to end a Windows session with \
-             ERRINFO_GRAPHICSSUBSYSTEMFAILED"
+            host_setting = opts.graphics_pipeline,
+            env = graphics_pipeline_requested(),
+            "advertising the graphics pipeline"
         );
     }
     early_capabilities_with(graphics)
@@ -191,7 +194,7 @@ pub fn client_blocks(opts: &ResolvedOptions, selected: SecurityProtocol) -> Clie
             desktop_orientation: Some(0),
             desktop_scale_factor: Some(opts.scale_factor),
             device_scale_factor: Some(device_scale_factor(opts.scale_factor)),
-            early_capability_flags: early_capabilities(),
+            early_capability_flags: early_capabilities(opts),
             ..ClientCoreData::default()
         }),
         // Both words zero is the correct "I am using TLS or CredSSP" signal
@@ -667,6 +670,35 @@ mod tests {
             message_channel: Some(ServerMessageChannelData { channel_id: 1005 }),
             multitransport: None,
         }
+    }
+
+    /// The host setting reaches the wire. A GNOME desktop refuses a client
+    /// that does not advertise the pipeline and a Windows one is better off
+    /// without it, so which of the two this is has to be a property of the
+    /// host rather than of the build.
+    ///
+    /// Only the positive direction is asserted here: `GFX_ENV` also turns the
+    /// bit on, and a developer running the suite with it set would otherwise
+    /// see a failure that says nothing about their change. The negative
+    /// direction is `early_capabilities_with`, which reads no environment.
+    #[test]
+    fn a_host_that_asks_for_the_graphics_pipeline_advertises_it() {
+        let mut c = ConnectOptions::rdp("host", 3389);
+        c.rdp_mut().graphics_pipeline = true;
+        let rdp = c.rdp_options().expect("rdp").clone();
+        let opts = ResolvedOptions::resolve(&c, &rdp, &mut Vec::new()).expect("valid");
+        assert!(opts.graphics_pipeline, "the setting survives resolution");
+
+        let blocks = client_blocks(&opts, SecurityProtocol::Hybrid);
+        let flags = blocks
+            .core
+            .expect("core")
+            .early_capability_flags
+            .expect("flags");
+        assert_eq!(
+            flags & early_capability_flags::SUPPORT_DYNVC_GFX_PROTOCOL,
+            early_capability_flags::SUPPORT_DYNVC_GFX_PROTOCOL
+        );
     }
 
     /// Advertising the graphics pipeline by default cost a working Windows

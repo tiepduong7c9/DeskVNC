@@ -262,6 +262,26 @@ pub struct RdpOptions {
     /// the highest version the server will negotiate.
     pub legacy_tls: bool,
 
+    /// Advertise the graphics pipeline for this host
+    /// (`RNS_UD_CS_SUPPORT_DYNVC_GFX_PROTOCOL`, MS-RDPEGFX).
+    ///
+    /// Per host because the two server families disagree about what follows
+    /// from it, and neither answer is right for the other:
+    ///
+    /// * gnome-remote-desktop paints through EGFX and nothing else. Without
+    ///   this it refuses the connection outright, logging "Client did not
+    ///   advertise support for the Graphics Pipeline".
+    /// * A Windows host paints perfectly well through the legacy bitmap path
+    ///   and only reaches EGFX when asked. Asking it today gets further than
+    ///   it used to and still ends in a ClearCodec cache miss
+    ///   (`docs/RDP_SPEC_NOTES.md` §1.20), so for that host this is a worse
+    ///   session than the one it already has.
+    ///
+    /// Off by default, which is the Windows answer, because a host that does
+    /// not need the pipeline loses nothing by not advertising it and a host
+    /// that does is one the user is configuring anyway.
+    pub graphics_pipeline: bool,
+
     /// Colour depth to request. MS-RDPBCGR 2.2.1.3.2 TS_UD_CS_CORE
     /// `highColorDepth` plus `supportedColorDepths`.
     pub color_depth: RdpColorDepth,
@@ -339,6 +359,7 @@ impl Default for RdpOptions {
             domain: None,
             nla: NlaPolicy::Required,
             legacy_tls: false,
+            graphics_pipeline: false,
             color_depth: RdpColorDepth::Auto,
             codecs: CodecSet::default(),
             audio: AudioMode::PlayLocally,

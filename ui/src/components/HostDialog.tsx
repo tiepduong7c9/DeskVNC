@@ -858,6 +858,24 @@ function RdpOptionsSection({
         label="Connect to the console session"
       />
 
+      {/*
+        Per host, and off by default, because the two server families want
+        opposite answers. GNOME's remote desktop draws through the graphics
+        pipeline and nothing else, and turns a client away that does not ask
+        for it. Windows draws perfectly well without it.
+
+        The hint names the machine rather than the protocol: somebody sharing
+        a GNOME desktop does not know what MS-RDPEGFX is, and somebody with a
+        working Windows connection needs to be told plainly to leave this
+        alone.
+      */}
+      <Check
+        checked={rdp.graphicsPipeline}
+        onChange={(graphicsPipeline) => onChange({ graphicsPipeline })}
+        label="Use the graphics pipeline"
+        hint="Needed for GNOME's built-in screen sharing on Linux, which will not accept a connection without it. Windows computers do not need it and work better without it, so leave this off unless you are connecting to a Linux desktop."
+      />
+
       <div className="rounded-md border border-subtle">
         <button
           type="button"

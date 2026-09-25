@@ -816,7 +816,30 @@ misses.
 The other candidate is the session this connected to: an auto reconnect
 cookie arrived for `logon_id=2`, so the Windows session already existed.
 
-One number tells them apart, and it is the index the miss names: a small one
-means the cache was emptied under us, a large one means the server is far
-ahead of a cache we started fresh. The dump now reaches the bands layer,
-which is where that index is.
+A dump of a later frame gives the first real evidence. Its head parses
+cleanly and its bands layer does too:
+
+```
+glyphFlags=0x00 seqNumber=1  residual=5588 bands=862 subcodec=0   (6464 total)
+band 0: x 21..63  y 8..14  h=7  bkg=(196,192,189)
+   x=21 SHORT_MISS y_on=3 count=6
+   x=22 CACHE_HIT index=15807
+   x=23 CACHE_HIT index=16324
+   x=24 CACHE_HIT index=17597
+```
+
+The band geometry is plausible and the first column is a miss, which is what
+a cold cache should produce. The columns after it are not: indices near
+16000 on the second ClearCodec message of a channel are more entries than
+this session can have inserted, so either `vbar_header` is reading a
+`VBAR_CACHE_HIT` where the server sent something else, or the cache is
+shared across a boundary this client resets at. `vbar_header` says of itself
+that it is derived rather than transcribed, which makes it the first place
+to look.
+
+**This is not on the path to a working Windows session and should not be
+treated as one.** A Windows host paints correctly through the legacy bitmap
+path, and the graphics pipeline is now a per host setting that is off by
+default (`RdpOptions::graphics_pipeline`). What section 1.20 blocks is
+EGFX *on Windows*, which is an improvement to a connection that already
+works, not a fix for one that does not.
