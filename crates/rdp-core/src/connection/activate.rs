@@ -820,11 +820,12 @@ fn redirection_standard(body: &[u8]) -> RdpError {
 fn redirection_from(packet: &rdp_pdu::rdp::ServerRedirectionPacket<'_>) -> RdpError {
     match crate::session::redirect::Redirection::from_packet(packet) {
         Some(redirect) => RdpError::Redirected(Box::new(redirect)),
-        None => RdpError::Protocol(
+        None => RdpError::Protocol(format!(
             "the server ended the connection sequence with a redirection this client will \
-             not follow (MS-RDPBCGR 2.2.13.1)"
-                .to_owned(),
-        ),
+             not follow: redirFlags 0x{:08x} names neither a host to dial nor a routing \
+             token to present (MS-RDPBCGR 2.2.13.1)",
+            packet.redir_options
+        )),
     }
 }
 

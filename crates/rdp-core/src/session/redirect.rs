@@ -59,7 +59,11 @@ pub struct Redirection {
     pub session_id: u32,
     /// Where to dial: `TargetNetAddress`, else the first of
     /// `TargetNetAddresses`, else `TargetFQDN`, else `TargetNetBiosName`.
-    target: String,
+    ///
+    /// `None` for a handover, which names no target because the client comes
+    /// back to the host it is already talking to and is told apart from a
+    /// fresh connection by the routing token alone.
+    target: Option<String>,
     /// `TargetFQDN`, which is the name the target's certificate is issued to
     /// and therefore the name TLS has to verify against.
     fqdn: Option<String>,
@@ -84,6 +88,33 @@ impl Redirection {
     /// where it is), or no usable target.
     #[must_use]
     pub fn from_packet(packet: &ServerRedirectionPacket<'_>) -> Option<Self> {
+        // The shape of the packet, never its contents. A redirection carries
+        // a user name, a password and a routing token, and none of the three
+        // may reach a log; presence and length are enough to tell a broker
+        // redirection from a gnome-remote-desktop handover. This sits here
+        // rather than at either call site because a redirection arrives by
+        // two paths, during the connection sequence and from the run loop,
+        // and the second one is the one GNOME uses.
+        tracing::debug!(
+            redir_options = format_args!("0x{:08x}", packet.redir_options),
+            session_id = packet.session_id,
+            target_net_address = packet.target_net_address.is_some(),
+            target_net_addresses = packet.target_net_addresses.len(),
+            target_fqdn = packet.target_fqdn.is_some(),
+            target_netbios_name = packet.target_netbios_name.is_some(),
+            load_balance_info = packet
+                .load_balance_info
+                .as_ref()
+                .map(|t| t.as_slice().len()),
+            username = packet.username.is_some(),
+            domain = packet.domain.is_some(),
+            password = packet.password.as_ref().map(|p| p.expose().len()),
+            password_is_pk_encrypted = packet.password_is_encrypted(),
+            redirection_guid = packet.redirection_guid.is_some(),
+            target_certificate = packet.target_certificate.is_some(),
+            "a server redirection arrived"
+        );
+
         if packet.is_no_redirect() {
             tracing::info!(
                 session_id = packet.session_id,
@@ -99,10 +130,30 @@ impl Redirection {
             .or(packet.target_fqdn.as_deref())
             .or(packet.target_netbios_name.as_deref())
             .map(str::trim)
-            .filter(|t| is_plausible_target(t))?;
+            .filter(|t| is_plausible_target(t))
+            .map(str::to_owned);
+
+        // A redirection that names no target is not necessarily unusable.
+        // gnome-remote-desktop hands a session over from its system daemon to
+        // the user's own by redirecting the client back to the same host and
+        // port, telling that connection apart from a fresh one by the
+        // `LoadBalanceInfo` cookie alone (`docs/RDP_SPEC_NOTES.md` §1.12).
+        // What is unusable is a packet carrying neither: the next attempt
+        // would be identical to this one, so following it is a loop.
+        if target.is_none() && packet.load_balance_info.is_none() {
+            tracing::info!(
+                redir_options = format_args!("0x{:08x}", packet.redir_options),
+                "the redirection names neither a target nor a routing token: staying here"
+            );
+            return None;
+        }
 
         // The password is cleartext UTF-16LE unless the flag says it is
-        // ciphertext under a key we do not have.
+        // ciphertext under the public key of the certificate the packet
+        // carries, which is a key only the target server holds the other
+        // half of. A client never decrypts this; it forwards the blob, and
+        // the only protocol that forwards it is RDSTLS, which this build
+        // does not speak (`docs/RDP_SPEC_NOTES.md` §1.14).
         let password = if packet.password_is_encrypted() {
             tracing::debug!(
                 "the redirection password is public key encrypted, which this build cannot read"
@@ -114,7 +165,7 @@ impl Redirection {
 
         Some(Self {
             session_id: packet.session_id,
-            target: target.to_owned(),
+            target,
             fqdn: packet
                 .target_fqdn
                 .as_deref()
@@ -136,7 +187,10 @@ impl Redirection {
     /// event. Carries no credential and no token.
     #[must_use]
     pub fn describe(&self) -> String {
-        format!("redirected to {}", self.target)
+        match &self.target {
+            Some(target) => format!("redirected to {target}"),
+            None => "redirected back to the same host".to_owned(),
+        }
     }
 
     /// True when the packet said not to save the user name it carried.
@@ -169,7 +223,11 @@ impl Redirection {
             ..
         } = self;
 
-        options.host = target;
+        // A handover names no host: the target is the one we are already
+        // dialling, and the routing token is the only thing that changes.
+        if let Some(target) = target {
+            options.host = target;
+        }
         // The certificate the target presents is issued to its FQDN, so that
         // is what SNI, the trust on first use pin and the CredSSP service
         // principal have to use, not the address we dialled (PRDRDP/00 R26
@@ -200,7 +258,10 @@ impl Redirection {
 /// nothing that arrived with it.
 impl std::fmt::Display for Redirection {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "the server redirected this session to {}", self.target)
+        match &self.target {
+            Some(target) => write!(f, "the server redirected this session to {target}"),
+            None => f.write_str("the server redirected this session back to the same host"),
+        }
     }
 }
 
@@ -320,7 +381,8 @@ mod tests {
     }
 
     /// A cleartext password is transcoded out of UTF-16LE and used. An
-    /// encrypted one is dropped, because we have no key for it.
+    /// encrypted one is dropped, because we have no key for it and no
+    /// protocol to forward it over.
     #[test]
     fn the_password_is_read_only_when_it_is_cleartext() {
         let mut p = packet();
@@ -391,5 +453,46 @@ mod tests {
         assert!(!shown.contains("tsv://"), "{shown}");
         assert!(!shown.contains("alice"), "{shown}");
         assert!(shown.contains("10.0.0.7"), "{shown}");
+    }
+
+    /// gnome-remote-desktop's handover: the system daemon redirects the
+    /// client back to the host it is already talking to, and the routing
+    /// token is the only thing that tells the returning connection apart
+    /// from a fresh one. Refusing this packet for naming no target is what
+    /// left a GNOME session on a black screen until the daemon gave up
+    /// (`docs/RDP_SPEC_NOTES.md` §1.12).
+    #[test]
+    fn a_handover_with_only_a_routing_token_is_followed() {
+        let mut p = ServerRedirectionPacket::new(4);
+        p.load_balance_info = Some(Payload::new(b"Cookie: msts=3739063820.15629.0000\r\n"));
+        p.username = Some("tiep".to_owned());
+
+        let redirect = Redirection::from_packet(&p).expect("followed");
+        assert_eq!(redirect.describe(), "redirected back to the same host");
+
+        let mut options = ConnectOptions::rdp("fedora.local", 3389);
+        let mut token = None;
+        redirect.apply(&mut options, &mut token);
+        assert_eq!(
+            options.host, "fedora.local",
+            "a handover names no target, so the host is the one we already had"
+        );
+        assert_eq!(options.port, 3389);
+        assert_eq!(
+            token.as_deref(),
+            Some(&b"Cookie: msts=3739063820.15629.0000\r\n"[..]),
+            "the cookie is what the next connection request presents"
+        );
+    }
+
+    /// The one redirection that is genuinely unusable: it names no host to
+    /// dial and carries no token to present, so the next attempt would be
+    /// byte for byte this one. `MAX_CHAINED_REATTEMPTS` would stop the loop
+    /// eventually; not starting it is better.
+    #[test]
+    fn a_redirection_naming_neither_target_nor_token_is_refused() {
+        let mut p = ServerRedirectionPacket::new(4);
+        p.username = Some("tiep".to_owned());
+        assert!(Redirection::from_packet(&p).is_none());
     }
 }
