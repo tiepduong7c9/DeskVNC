@@ -419,8 +419,22 @@ testing one of these two servers cannot break the other. Shipping it on
 traded a working Windows session for a GNOME one, which is a trade nobody
 asked for.
 
-Section 1.12 revises the GNOME half of this entry: that server was not
-waiting on the graphics channel at all.
+**The GNOME half of this entry is closed.** That server was not waiting on
+the graphics channel at all (section 1.12), and once the four faults of
+sections 1.12 to 1.17 were fixed a gnome-remote-desktop session paints,
+resizes and carries a clipboard. What was left after the flag was: a
+handover redirection this client refused, a routing token it double encoded,
+an RDSTLS exchange it did not speak, a `WIRE_TO_SURFACE_2` it refused
+outright, an EGFX reply it wrapped in an envelope no server expects, and a
+`bitmapDataLength` it did not read. None of those was the flag.
+
+**The Windows half is still open and is now untested rather than known
+broken.** That host ended the session with `ERRINFO_GRAPHICSSUBSYSTEMFAILED`
+on an `RDPGFX_CAPS_ADVERTISE` that carried a segment envelope it should not
+have had (section 1.15). No Windows host has been tried since that was
+fixed, so the failure may already be gone. Until one is, this stays open:
+closing it on the reasoning alone is how the advertisement got shipped on by
+default the first time.
 
 ### 1.12 SETTLED: gnome-remote-desktop hands the session over by redirecting to itself
 
