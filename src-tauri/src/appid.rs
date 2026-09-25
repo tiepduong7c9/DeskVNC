@@ -76,6 +76,18 @@ pub fn entry_path(host_id: &str) -> Option<PathBuf> {
     Some(applications_dir()?.join(format!("{app_id}.desktop")))
 }
 
+/// The `app_id` for a host whose desktop entry is already on disk.
+///
+/// What a window opening should ask. Publishing from there instead would
+/// rewrite the file at the exact moment the window maps, and a rewrite makes
+/// GNOME re-read it, which is the race that writing at save time avoids. The
+/// answer being `None` is the caller's cue to publish and accept the race, for
+/// the one case that needs it: an entry that has gone missing under us.
+pub fn app_id_if_published(host_id: &str) -> Option<String> {
+    let app_id = app_id_for(host_id)?;
+    entry_path(host_id)?.is_file().then_some(app_id)
+}
+
 /// Where the icon a desktop file points at is kept.
 ///
 /// A separate copy from `host-icons/`, because a bundled icon has no file at
@@ -136,6 +148,12 @@ fn entry_text(app_id: &str, name: &str, icon: &Path) -> String {
 
 /// Write (or refresh) the desktop entry and the icon it points at.
 ///
+/// Called when a host's icon is saved and again at startup, NOT when a window
+/// opens. GNOME notices a new `.desktop` file through a directory monitor and
+/// takes a moment over it; a file written milliseconds before its window maps
+/// loses that race and the first session comes up unmatched. Written at save
+/// time it has been there for as long as the host has.
+///
 /// Returns the `app_id` to put on the window, or `None` when there is nothing
 /// to match against: no icon, an unusable host id, or a write that failed.
 /// Every one of those is a session that opens with the ordinary application
@@ -157,7 +175,15 @@ pub fn publish(data_dir: &Path, host_id: &str, name: &str, icon_png: &[u8]) -> O
 }
 
 /// Create the parent directory and write the file, replacing what was there.
+///
+/// A write whose content matches what is already on disk is skipped. That is
+/// not about saving the write: touching a file in the applications directory
+/// makes GNOME re-read it, and doing that on every startup and every save
+/// would keep re-running the matching this whole module exists to get right.
 fn write_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    if std::fs::read(path).is_ok_and(|existing| existing == bytes) {
+        return Ok(());
+    }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -202,13 +228,13 @@ pub fn set_app_id(window: &WebviewWindow, app_id: &str) {
             return;
         }
     };
-    // The `app_id` lives on the GdkWindow, which does not exist until the
-    // widget is realized. Realizing does not show it: the caller builds the
-    // window hidden precisely so the compositor never sees the shared id
-    // first and matches the window to the wrong application.
-    gtk_window.realize();
+    // The `app_id` lives on the GdkWindow, which exists once the widget is
+    // realized, and a built window already is. Deliberately NOT realized by
+    // hand here: doing that to a window tao had not shown yet left GTK's
+    // titlebar buttons unresponsive while the compositor's own window menu
+    // still worked.
     let Some(gdk_window) = gtk_window.window() else {
-        tracing::debug!("gtk window did not realize, leaving the app id alone");
+        tracing::debug!("gtk window is not realized, leaving the app id alone");
         return;
     };
     let Ok(app_id) = std::ffi::CString::new(app_id) else {
@@ -287,6 +313,36 @@ mod tests {
             1,
             "the name must not be able to add a second Exec"
         );
+    }
+
+    /// Proven by making the file unwritable rather than by watching its
+    /// timestamp: mtime resolution is a filesystem property, and on one with
+    /// second granularity both writes land in the same second and the test
+    /// passes whether or not the skip works.
+    #[test]
+    fn a_write_of_identical_content_does_not_touch_the_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested").join("x.desktop");
+        write_file(&path, b"first").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+
+        // Identical: skipped, so the read-only file is never opened for
+        // writing and this succeeds.
+        write_file(&path, b"first").expect("an unchanged write must be skipped");
+
+        // Different: actually attempted, and the read-only file refuses it.
+        // That is what proves the first call skipped rather than succeeded by
+        // some other route.
+        assert!(
+            write_file(&path, b"second").is_err(),
+            "a changed write must really write"
+        );
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        write_file(&path, b"second").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"second");
     }
 
     #[test]

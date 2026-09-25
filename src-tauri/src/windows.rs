@@ -124,16 +124,15 @@ pub fn open_session_window(
         // a window with no icon, and it is unreachable either way.
         builder = builder.icon(icon)?;
     }
-    // A window has to carry its `app_id` before the compositor first sees it,
-    // or GNOME matches it to the shared application and the dock draws the
-    // wrong icon. So when there is one to set, the window is built hidden and
-    // shown a few lines later.
-    let deferred_show = cfg!(target_os = "linux") && app_id.is_some();
-    if deferred_show {
-        builder = builder.visible(false);
-    }
     let window = builder.build()?;
 
+    // Named after the window exists, never before it. An earlier version built
+    // the window hidden and realized the GTK widget by hand so the `app_id`
+    // could be set before the first map; that left GTK's own idea of the
+    // window inconsistent and its titlebar buttons dead, while the
+    // compositor's window menu still worked. Mutter accepts a later `app_id`
+    // and GNOME re-matches the window when it changes, so the cost of doing it
+    // in the ordinary order is at most a brief flash of the application icon.
     #[cfg(target_os = "linux")]
     if let Some(app_id) = &app_id {
         crate::appid::set_app_id(&window, app_id);
@@ -141,12 +140,6 @@ pub fn open_session_window(
     #[cfg(not(target_os = "linux"))]
     let _ = &app_id;
 
-    if deferred_show {
-        // Unconditional, and not inside the block above: a window built hidden
-        // must end up visible even if naming it failed, or the session would
-        // be connected and invisible.
-        window.show()?;
-    }
     Ok(window)
 }
 

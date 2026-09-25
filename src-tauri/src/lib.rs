@@ -72,6 +72,11 @@ pub fn run() {
             std::fs::create_dir_all(&data_dir)?;
 
             let store = Arc::new(vnc_store::Store::open(Some(data_dir.clone()))?);
+            // Dock icons need a `.desktop` file the shell has already read, so
+            // publish them now rather than when a window opens. Best effort:
+            // a library whose icons cannot be described is a library with
+            // plain dock icons, not a launch failure.
+            commands::hosts::publish_all_desktop_entries(&store);
             let credentials = Arc::new(vnc_store::CredentialStore::new(data_dir.clone()));
             // The pin store is built first and shared, because three
             // features verify against it: the Files panel, the RFB tunnel and

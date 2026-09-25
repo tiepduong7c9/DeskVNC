@@ -2450,14 +2450,18 @@ pub async fn open_session_window(
     let icon = icon_png.as_deref().and_then(crate::hosticon::to_image);
 
     // On GNOME the per-window icon above is not what a dock draws; a desktop
-    // entry matched by `app_id` is. Written here rather than on save so it
-    // tracks the icon and the name a session actually opens with, and skipped
-    // entirely for a host that has chosen no icon.
+    // entry matched by `app_id` is.
     #[cfg(target_os = "linux")]
-    let app_id = match (&icon_png, &profile_id) {
-        (Some(png), Some(pid)) => crate::appid::publish(state.store.data_dir(), pid, &name, png),
-        _ => None,
-    };
+    let app_id = profile_id.as_ref().and_then(|pid| {
+        // Normally just a lookup: saving the host wrote the entry, long enough
+        // ago for the shell to have read it. Publishing here is the repair
+        // path for an entry that has gone missing, and accepts that the first
+        // window after that may come up unmatched.
+        crate::appid::app_id_if_published(pid).or_else(|| {
+            let png = icon_png.as_deref()?;
+            crate::appid::publish(state.store.data_dir(), pid, &name, png)
+        })
+    });
     #[cfg(not(target_os = "linux"))]
     let app_id = None;
 

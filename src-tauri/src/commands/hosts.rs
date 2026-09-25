@@ -34,7 +34,56 @@ pub async fn save_host(
     }
     let returned = profile.clone();
     super::blocking(move || store.save_host(&profile)).await?;
+    publish_desktop_entry(&state.store, &returned);
     Ok(returned)
+}
+
+/// Keep this host's generated desktop entry in step with its profile.
+///
+/// Here rather than at window-open time because GNOME finds a new `.desktop`
+/// file through a directory monitor and is not instant about it: a file
+/// written just before its window maps loses that race, and the first session
+/// after choosing an icon came up wearing the application icon. Saving the
+/// host is the moment that is reliably long before any of its windows.
+///
+/// A host with no icon has its entry withdrawn, which covers both "never had
+/// one" and "just gave one up".
+#[allow(unused_variables)]
+fn publish_desktop_entry(store: &vnc_store::Store, profile: &HostProfile) {
+    #[cfg(target_os = "linux")]
+    {
+        let icon = crate::hosticon::resolve(store, &profile.id, profile.icon.as_deref());
+        match icon {
+            Some(png) => {
+                crate::appid::publish(store.data_dir(), &profile.id, &profile.friendly_name, &png);
+            }
+            None => crate::appid::withdraw(store.data_dir(), &profile.id),
+        }
+    }
+}
+
+/// Write a desktop entry for every host that has an icon.
+///
+/// Runs once at startup. Without it a library restored from a backup, or
+/// carried to another computer, has icons in it that no `.desktop` file
+/// describes, and the dock would not honour them until each host happened to
+/// be saved again. `write_file` skips a write whose content already matches,
+/// so this is quiet on every run after the first.
+#[allow(unused_variables)]
+pub fn publish_all_desktop_entries(store: &vnc_store::Store) {
+    #[cfg(target_os = "linux")]
+    {
+        let hosts = match store.list_hosts() {
+            Ok(hosts) => hosts,
+            Err(e) => {
+                tracing::warn!("could not list hosts to publish dock icons: {e}");
+                return;
+            }
+        };
+        for host in hosts.iter().filter(|h| h.icon.is_some()) {
+            publish_desktop_entry(store, host);
+        }
+    }
 }
 
 #[tauri::command]
