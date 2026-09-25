@@ -27,9 +27,15 @@ to stored data and to the IPC contract between the Rust core and the frontend.
   `.desktop` file a window's `app_id` matches, never from the window itself.
   So a host with an icon gets a hidden desktop entry of its own in
   `~/.local/share/applications`, and its session window is given the matching
-  `app_id` before the compositor first sees it. The entry is removed when the
-  host is deleted or gives up its icon, and a library where nobody sets an icon
-  writes nothing at all.
+  `app_id`. The entry is removed when the host is deleted or gives up its icon,
+  and a library where nobody sets an icon writes nothing at all.
+
+  One GNOME behaviour is worth knowing rather than reporting: *changing* an
+  icon takes a second or two to reach the dock, and connecting inside that
+  window shows the previous icon once. GNOME re-reads a changed `.desktop`
+  file on a rate-limited monitor and offers no way to ask it to look now.
+  Setting an icon for the first time is unaffected, and so is every use after
+  the change has settled.
 
   A picture you choose is decoded, capped at 256 px and re-encoded as PNG into
   the application data directory. The file you picked is copied, never merely

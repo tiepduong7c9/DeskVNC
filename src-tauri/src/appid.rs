@@ -25,6 +25,25 @@
 //! it is why this is opt-in per host: a library where nobody sets an icon
 //! writes nothing at all.
 //!
+//! # A delay we cannot remove
+//!
+//! *Changing* a host's icon takes a second or two to reach the dock, and
+//! connecting inside that window shows the previous icon once.
+//!
+//! The desktop file's name never changes, so GNOME keeps matching the window
+//! to the right entry throughout; what it serves is the icon it cached the
+//! last time it read that entry. It re-reads on a directory monitor that GIO
+//! rate-limits and GNOME debounces again on top, and there is no call to make
+//! it look now. Writing the entry when the host is saved buys as much of that
+//! delay back as exists to buy.
+//!
+//! Confirmed rather than assumed: the stale icon is the *previous* one, not a
+//! generic fallback, which is only possible if the match already succeeded.
+//! An `app_id` that had failed to match would draw neither.
+//!
+//! It costs nothing after the change has settled, and nothing at all when an
+//! icon is set for the first time, because there is no earlier icon to cache.
+//!
 //! Linux only. Windows draws a per-window icon by itself, and macOS has one
 //! Dock tile per application by design, with no `app_id` equivalent to set.
 
