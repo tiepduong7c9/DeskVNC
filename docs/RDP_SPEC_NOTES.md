@@ -625,3 +625,45 @@ tracing that there was nothing to clear: a server that deletes a context will
 not send the upgrades that would have refined what is in it, and refining a
 tile the server believes it discarded is how one frame comes back carrying
 another frame's coefficients.
+
+### 1.17 SETTLED: `WIRE_TO_SURFACE_2` carries a `bitmapDataLength`
+
+`crates/rdp-pdu/src/vc/egfx.rs`, the `WIRE_TO_SURFACE_2` body decoder.
+
+**What was believed.** The type's own documentation said it: "No
+`bitmapDataLength`: the payload runs to the end of the PDU as `pduLength`
+declared it. That asymmetry with `_1` is why the dispatcher takes
+`pduLength - 8` before calling a body decoder."
+
+**What is true.** There is no asymmetry. `RDPGFX_WIRE_TO_SURFACE_PDU_2`
+carries a `bitmapDataLength` between `pixelFormat` and `bitmapData`, exactly
+as `_1` does. Reading the structure without it starts the codec bitstream
+four bytes early, which puts every field of that bitstream four bytes out.
+
+**How we know.** The arithmetic, to the byte. gnome-remote-desktop sent a
+27366 byte `bitmapData`, and the progressive decoder refused its first block
+as an unknown type with a `blockLen` of 3435134976, which is 0xCCC00000:
+
+```
+offset 0..2   E2 6A         read as blockType, unknown
+offset 2..6   00 00 C0 CC   read as blockLen, 0xCCC00000
+```
+
+0xCCC0 is `WBT_SYNC`. It is sitting at offset 4, where a stream that began
+after a four byte length field would put it. Those four bytes read as a
+little endian `u32` are 0x00006AE2, which is 27362, which is 27366 - 4: the
+length of everything after them. Both the position of the sync magic and the
+value of the length agree, so this is not an inference.
+
+Two independent facts confirm the first nine bytes were already right, so the
+four are between `pixelFormat` and the bitstream rather than in front of the
+structure: `surfaceId` decoded as 0, which is the surface the server had just
+created, and `codecId` as 0x0009, which is a codec that exists.
+
+The declared length is checked against what is left rather than trusted. The
+four bytes are either a length or the first four bytes of a bitstream and
+there is no reading of them that is right by accident, so a server that
+disagrees produces a named error instead of a picture assembled from the
+wrong offset. The test that pins this builds the bytes by hand: a round trip
+would prove only that our encoder and decoder agree with each other, which
+they did while both were wrong.

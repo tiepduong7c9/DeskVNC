@@ -575,10 +575,10 @@ pub enum EgfxPdu<'a> {
     },
     /// `RDPGFX_WIRE_TO_SURFACE_PDU_2` (MS-RDPEGFX 2.2.2.2), server to client.
     ///
-    /// No `bitmapDataLength`: the payload runs to the end of the PDU as
-    /// `pduLength` declared it. That asymmetry with `_1` is why the
-    /// dispatcher takes `pduLength - 8` before calling a body decoder rather
-    /// than letting one read from the outer reader.
+    /// Carries a `bitmapDataLength` before `bitmapData`, exactly as `_1`
+    /// does. The dispatcher still takes `pduLength - 8` before calling a body
+    /// decoder, and the declared length is checked against what is left
+    /// rather than trusted (`docs/RDP_SPEC_NOTES.md` §1.17).
     WireToSurface2 {
         /// `surfaceId`.
         surface_id: u16,
@@ -882,7 +882,7 @@ impl<'a> EgfxPdu<'a> {
                 bitmap_data,
                 ..
             } => 2 + 2 + 1 + dest_rect.size() + 4 + bitmap_data.len(),
-            Self::WireToSurface2 { bitmap_data, .. } => 2 + 2 + 4 + 1 + bitmap_data.len(),
+            Self::WireToSurface2 { bitmap_data, .. } => 2 + 2 + 4 + 1 + 4 + bitmap_data.len(),
             Self::DeleteEncodingContext { .. } => 2 + 4,
             Self::SolidFill { fill_rects, .. } => {
                 2 + Color32::LEN + 2 + fill_rects.len() * Rect16::LEN
@@ -994,13 +994,37 @@ fn decode_body<'a>(b: &mut Reader<'a>, header: EgfxHeader) -> PduResult<EgfxPdu<
                 bitmap_data,
             })
         }
-        cmd_id::WIRE_TO_SURFACE_2 => Ok(EgfxPdu::WireToSurface2 {
-            surface_id: b.u16("RDPGFX_WIRE_TO_SURFACE_PDU_2")?,
-            codec_id: b.u16("RDPGFX_WIRE_TO_SURFACE_PDU_2")?,
-            codec_context_id: b.u32("RDPGFX_WIRE_TO_SURFACE_PDU_2")?,
-            pixel_format: b.u8("RDPGFX_WIRE_TO_SURFACE_PDU_2")?,
-            bitmap_data: Payload::new(b.rest()),
-        }),
+        cmd_id::WIRE_TO_SURFACE_2 => {
+            const NAME: &str = "RDPGFX_WIRE_TO_SURFACE_PDU_2";
+            let surface_id = b.u16(NAME)?;
+            let codec_id = b.u16(NAME)?;
+            let codec_context_id = b.u32(NAME)?;
+            let pixel_format = b.u8(NAME)?;
+            // `bitmapDataLength`, which this structure carries exactly as
+            // `_1` does. It is checked rather than trusted: the four bytes
+            // are either a length or the first four bytes of a codec
+            // bitstream, and reading them wrong puts every later field of
+            // that bitstream four bytes out
+            // (`docs/RDP_SPEC_NOTES.md` §1.17).
+            let at = b.offset();
+            let declared = b.u32(NAME)? as usize;
+            let rest = b.rest();
+            if declared != rest.len() {
+                return Err(PduError::LengthMismatch {
+                    context: NAME,
+                    declared,
+                    actual: rest.len(),
+                    offset: at,
+                });
+            }
+            Ok(EgfxPdu::WireToSurface2 {
+                surface_id,
+                codec_id,
+                codec_context_id,
+                pixel_format,
+                bitmap_data: Payload::new(rest),
+            })
+        }
         cmd_id::DELETE_ENCODING_CONTEXT => Ok(EgfxPdu::DeleteEncodingContext {
             surface_id: b.u16("RDPGFX_DELETE_ENCODING_CONTEXT_PDU")?,
             codec_context_id: b.u32("RDPGFX_DELETE_ENCODING_CONTEXT_PDU")?,
@@ -1231,6 +1255,7 @@ impl Encode for EgfxPdu<'_> {
                 w.u16(*codec_id);
                 w.u32(*codec_context_id);
                 w.u8(*pixel_format);
+                w.u32(bitmap_data.len() as u32);
                 w.bytes(bitmap_data.as_slice());
             }
             Self::DeleteEncodingContext {
@@ -1849,6 +1874,86 @@ mod tests {
             } if bitmap_data.as_slice() == [9, 9, 9, 9]
         ));
         assert_eq!(got[2], EgfxPdu::EndFrame { frame_id: 7 });
+    }
+
+    /// `RDPGFX_CODECID_CAPROGRESSIVE`, which this crate does not name because
+    /// it lists the eight ids it needs and routing lives in `rdp-core`.
+    const PROGRESSIVE: u16 = 0x0009;
+
+    /// The byte layout, built by hand rather than round tripped, because a
+    /// round trip proves only that our encoder and decoder agree with each
+    /// other. `bitmapDataLength` sits between `pixelFormat` and the
+    /// bitstream, and leaving it out put every field of a progressive frame
+    /// four bytes out: gnome-remote-desktop's first block read as an unknown
+    /// type with a blockLen of 0xCCC00000, which is the `WBT_SYNC` magic
+    /// seen through a four byte shift (`docs/RDP_SPEC_NOTES.md` §1.17).
+    #[test]
+    fn a_wire_to_surface_2_carries_its_bitmap_data_length() {
+        // `WBT_SYNC`: blockType 0xCCC0, blockLen 12, magic, version.
+        let mut stream = Vec::new();
+        stream.extend_from_slice(&0xCCC0u16.to_le_bytes());
+        stream.extend_from_slice(&12u32.to_le_bytes());
+        stream.extend_from_slice(&0xCACC_ACCAu32.to_le_bytes());
+        stream.extend_from_slice(&1u16.to_le_bytes());
+
+        let mut body = Vec::new();
+        body.extend_from_slice(&7u16.to_le_bytes());
+        body.extend_from_slice(&PROGRESSIVE.to_le_bytes());
+        body.extend_from_slice(&3u32.to_le_bytes());
+        body.push(pixel_format::XRGB_8888);
+        body.extend_from_slice(&(stream.len() as u32).to_le_bytes());
+        body.extend_from_slice(&stream);
+
+        let mut wire = Vec::new();
+        wire.extend_from_slice(&cmd_id::WIRE_TO_SURFACE_2.to_le_bytes());
+        wire.extend_from_slice(&0u16.to_le_bytes());
+        wire.extend_from_slice(&((body.len() + 8) as u32).to_le_bytes());
+        wire.extend_from_slice(&body);
+
+        let got: Vec<_> = EgfxPdu::iter(&wire).map(Result::unwrap).collect();
+        assert_eq!(
+            got,
+            vec![EgfxPdu::WireToSurface2 {
+                surface_id: 7,
+                codec_id: PROGRESSIVE,
+                codec_context_id: 3,
+                pixel_format: pixel_format::XRGB_8888,
+                bitmap_data: Payload::new(&stream),
+            }],
+            "the bitstream begins at WBT_SYNC and not four bytes before it"
+        );
+    }
+
+    /// The four bytes are either a length or the first four bytes of a
+    /// bitstream, and there is no reading of them that is right by accident.
+    /// A declared length that disagrees with what is left is refused rather
+    /// than used, so a wrong reading is a named error and not a picture
+    /// assembled from the wrong offset.
+    #[test]
+    fn a_wire_to_surface_2_whose_length_disagrees_is_refused() {
+        let mut body = Vec::new();
+        body.extend_from_slice(&7u16.to_le_bytes());
+        body.extend_from_slice(&PROGRESSIVE.to_le_bytes());
+        body.extend_from_slice(&3u32.to_le_bytes());
+        body.push(pixel_format::XRGB_8888);
+        body.extend_from_slice(&99u32.to_le_bytes());
+        body.extend_from_slice(&[1, 2, 3, 4]);
+
+        let mut wire = Vec::new();
+        wire.extend_from_slice(&cmd_id::WIRE_TO_SURFACE_2.to_le_bytes());
+        wire.extend_from_slice(&0u16.to_le_bytes());
+        wire.extend_from_slice(&((body.len() + 8) as u32).to_le_bytes());
+        wire.extend_from_slice(&body);
+
+        match EgfxPdu::iter(&wire).next() {
+            Some(Err(PduError::LengthMismatch {
+                declared, actual, ..
+            })) => {
+                assert_eq!(declared, 99);
+                assert_eq!(actual, 4);
+            }
+            other => panic!("expected a length mismatch, got {other:?}"),
+        }
     }
 
     #[test]
