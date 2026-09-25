@@ -15,6 +15,13 @@ on:
   push:
     tags: ["v*"]
 
+# The default token is read only on this repository, and creating a release
+# is a write. Granted here rather than by changing the repository default, so
+# the permission belongs to the one workflow that needs it and is visible in
+# the file that uses it.
+permissions:
+  contents: write
+
 env:
   CARGO_TERM_COLOR: always
 
