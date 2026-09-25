@@ -185,6 +185,15 @@ impl Egfx {
             .iter()
             .map(|version| Capset::new(*version, &CAPS_FLAGS_NONE))
             .collect();
+        // Logged on the way out as well as on the way back, because the two
+        // failures look identical from here otherwise: a server that never
+        // received a readable advertisement and one that received it and
+        // declined every version in it both go quiet
+        // (`docs/RDP_SPEC_NOTES.md` §1.15).
+        tracing::info!(
+            versions = ?ADVERTISED.map(|v| format!("{v:#010x}")),
+            "advertising the graphics capabilities"
+        );
         replies.emit(|buf| encode(&EgfxPdu::CapsAdvertise { capsets }, buf))
     }
 
@@ -202,6 +211,7 @@ impl Egfx {
         events: &mut Vec<SessionEvent>,
         replies: &mut ReplyBuf,
     ) -> Result<()> {
+        tracing::debug!(len = message.len(), "a graphics message arrived");
         // The whole `RDP_SEGMENTED_DATA` envelope goes to the decompressor,
         // descriptor byte and all. It walks the segments itself, and it has
         // to: an uncompressed segment still feeds the history window that the
