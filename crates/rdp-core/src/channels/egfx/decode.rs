@@ -148,7 +148,7 @@ pub fn wire_to_surface(
             };
             let stride = usize::from(w) * 4;
             uncompressed::decode(fmt, src, stride, &decoders.palette, dst)
-                .map_err(|e| refused("uncompressed", w, h, &e))
+                .map_err(|e| refused("uncompressed", w, h, src.len(), &e))
         }
         codec_id::PLANAR => planar::decode(
             src,
@@ -156,11 +156,11 @@ pub fn wire_to_surface(
             &mut decoders.planar,
             dst,
         )
-        .map_err(|e| refused("planar", w, h, &e)),
+        .map_err(|e| refused("planar", w, h, src.len(), &e)),
         codec_id::CLEARCODEC => decoders
             .clear
             .decode(src, dst)
-            .map_err(|e| refused("clearcodec", w, h, &e)),
+            .map_err(|e| refused("clearcodec", w, h, src.len(), &e)),
         // `RDPGFX_CODECID_CAVIDEO` is RemoteFX (MS-RDPEGFX 2.2.2.1). The
         // frame descriptor it returns is for the caller's damage tracking on
         // the Surface Bits path; inside EGFX the `destRect` already said
@@ -168,7 +168,7 @@ pub fn wire_to_surface(
         codec_id::CAVIDEO => {
             remotefx::decode_message(src, &mut decoders.rfx, &mut decoders.rfx_scratch, dst)
                 .map(|_| ())
-                .map_err(|e| refused("remotefx", w, h, &e))
+                .map_err(|e| refused("remotefx", w, h, src.len(), &e))
         }
         // Progressive RemoteFX (MS-RDPEGFX 2.2.4.2). The scratch is
         // RemoteFX's, which is the same four buffers and holds nothing
@@ -179,7 +179,7 @@ pub fn wire_to_surface(
         CAPROGRESSIVE => {
             progressive::decode_message(src, progressive_state, &mut decoders.rfx_scratch, dst)
                 .map(|_| ())
-                .map_err(|e| refused("progressive", w, h, &e))
+                .map_err(|e| refused("progressive", w, h, src.len(), &e))
         }
         // H.264 arrived with capability set version 10 and we advertise 8
         // and 8.1 only (`crate::channels::egfx::ADVERTISED`), so a server
@@ -222,9 +222,13 @@ fn wants_alpha(pixel_fmt: u8, surface_alpha: bool) -> bool {
 /// The same shape as the legacy path's `codec_error`
 /// (`crates/rdp-core/src/session/graphics.rs:371`), so a support log reads
 /// the same whichever path the pixels came down.
-fn refused(codec: &str, width: u16, height: u16, e: &DecodeError) -> RdpError {
+/// The bitstream length is in the message and no byte of the bitstream is
+/// (PRDRDP/12 §6.4). A truncation reported against a length tells a codec
+/// that was handed a short buffer from one that misread a full one, which is
+/// the distinction `docs/RDP_SPEC_NOTES.md` §1.1 leaves open for ZGFX.
+fn refused(codec: &str, width: u16, height: u16, len: usize, e: &DecodeError) -> RdpError {
     RdpError::Protocol(format!(
-        "the {codec} decoder refused a {width}x{height} egfx rectangle: {e}"
+        "the {codec} decoder refused a {width}x{height} egfx rectangle of {len} bytes: {e}"
     ))
 }
 

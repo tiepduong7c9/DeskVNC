@@ -233,7 +233,23 @@ impl Egfx {
             ))
         });
         let result = match decompressed {
-            Ok(()) => self.commands(&buf, ctx, events, replies),
+            Ok(()) => {
+                // Compressed or not, and how much came out. `rdp-codecs`'
+                // ZGFX token table is a reconstruction rather than a
+                // transcription (`docs/RDP_SPEC_NOTES.md` §1.1), and a
+                // reconstruction that is subtly wrong produces a short buffer
+                // rather than an error: the first symptom is whatever parses
+                // the output complaining that it was truncated. Comparing the
+                // two lengths is what tells a decompression fault from a
+                // command this client misread.
+                tracing::debug!(
+                    wire = message.len(),
+                    decompressed = buf.len(),
+                    descriptor = format_args!("{:#04x}", message.first().copied().unwrap_or(0)),
+                    "a graphics message was decompressed"
+                );
+                self.commands(&buf, ctx, events, replies)
+            }
             Err(e) => Err(e),
         };
         self.message = buf;
