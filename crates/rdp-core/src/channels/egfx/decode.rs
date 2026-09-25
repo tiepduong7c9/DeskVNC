@@ -251,7 +251,11 @@ fn dump(codec: &str, src: &[u8]) {
     if !matches!(std::env::var(DUMP_ENV).as_deref(), Ok("1")) {
         return;
     }
-    const MAX: usize = 512;
+    // Large enough for a whole ClearCodec frame. The layer that failed is
+    // rarely the first one in the stream: a `vbar cache miss` lives in the
+    // bands, which begin after the residual, and 512 bytes never reached
+    // them.
+    const MAX: usize = 64 * 1024;
     let shown = &src[..src.len().min(MAX)];
     let mut hex = String::with_capacity(shown.len() * 2);
     for b in shown {

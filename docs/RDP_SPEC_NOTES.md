@@ -769,3 +769,54 @@ error above.
 as hex and capped, so the next such question costs one build cycle instead
 of three. It is off by default and never reaches an error message, which is
 what PRDRDP/12 §6.4 actually forbids.
+
+### 1.20 OPEN: a ClearCodec VBar cache miss on a Windows host
+
+`crates/rdp-codecs/src/clear.rs`, the bands layer.
+
+**Where this sits.** Section 1.19's four and four split is confirmed: the
+RLEX refusal is gone and a Windows host now decodes past it. The dump also
+settles the outer framing, because the layer byte counts add up to the whole:
+
+```
+00 02 | f8 04 00 00 | a7 0a 00 00 | 10 08 00 00
+flags   residual 1272  bands 2727    subcodec 2064
+```
+
+2 + 12 + 1272 + 2727 + 2064 is 6077, which is the length the decoder
+reported. The residual layer parses cleanly too: `bd b6 ac` then `ff e0 10`
+is a 4320 pixel run of one colour, which is a plausible background for a
+128x64 rectangle.
+
+**What fails.** `codec state lost: clearcodec vbar cache miss`: a
+`VBAR_CACHE_HIT` named an index this client has no entry for.
+
+**What is not the cause.** `vbar_header`'s split is a derived reading
+(§4.8.3), but the fill side matches it: both short forms insert into the
+VBar cache and a cache hit does not, so the cursors cannot drift apart from
+each other. The entry cap is 4096 pixels and the band is 64 tall, so nothing
+is being dropped for size.
+
+**The two candidates.** The miss came 112 milliseconds after the second of
+two `RDPGFX_RESET_GRAPHICS` in a row:
+
+```
+50.349  the server reset the graphics pipeline width=1280 height=726
+50.573  the server reset the graphics pipeline width=1280 height=726
+50.685  clearcodec vbar cache miss
+```
+
+`Decoders::reset` empties the ClearCodec caches there, on the reading that a
+reset "restarts the graphics session" and the server has forgotten its own
+state. MS-RDPEGFX 2.2.2.14 says only that the PDU changes the width, the
+height and the monitor layout. If the server keeps its encoder cursors
+across one, emptying ours desynchronises them and every later cache hit
+misses.
+
+The other candidate is the session this connected to: an auto reconnect
+cookie arrived for `logon_id=2`, so the Windows session already existed.
+
+One number tells them apart, and it is the index the miss names: a small one
+means the cache was emptied under us, a large one means the server is far
+ahead of a cache we started fresh. The dump now reaches the bands layer,
+which is where that index is.
