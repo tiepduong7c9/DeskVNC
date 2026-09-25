@@ -258,6 +258,14 @@ pub fn read_data_tpdu<'a>(r: &mut Reader<'a>) -> PduResult<Reader<'a>> {
 pub enum X224Cookie {
     /// `Cookie: msts=<token>\r\n`. A load balancer supplies the token out of
     /// band and we echo it, so the bytes stay opaque here.
+    ///
+    /// Either the bare token or the whole field. A `LoadBalanceInfo` lifted
+    /// out of a Server Redirection is usually the whole field, prefix and
+    /// terminator included, and is written through untouched; a bare token
+    /// gets both added. `encode` decides by looking, which is what FreeRDP's
+    /// `nego_send_negotiation_request` does and is the only reading under
+    /// which gnome-remote-desktop's handover works at all
+    /// (`docs/RDP_SPEC_NOTES.md` §1.13).
     RoutingToken(Vec<u8>),
     /// `Cookie: mstshash=<identifier>\r\n`, where the identifier is the user
     /// name. Decision log R29 defaults this off, because the identifier
@@ -276,7 +284,15 @@ impl X224Cookie {
     #[must_use]
     pub fn size(&self) -> usize {
         match self {
-            Self::RoutingToken(t) => Self::ROUTING_PREFIX.len() + t.len() + 2,
+            Self::RoutingToken(t) => {
+                let prefix = if Self::carries_prefix(t) {
+                    0
+                } else {
+                    Self::ROUTING_PREFIX.len()
+                };
+                let terminator = if Self::carries_terminator(t) { 0 } else { 2 };
+                prefix + t.len() + terminator
+            }
             Self::MstsHash(s) => Self::HASH_PREFIX.len() + s.len() + 2,
         }
     }
@@ -286,10 +302,15 @@ impl X224Cookie {
     fn check(&self) -> PduResult<()> {
         match self {
             Self::RoutingToken(t) => {
-                if t.windows(2).any(|w| matches!(w, [0x0d, 0x0a])) {
+                // A terminator at the very end is what a `LoadBalanceInfo`
+                // looks like, and it is written through. One anywhere else
+                // would split the field in two on the wire, which is the
+                // mangling this check exists to stop.
+                let body = t.strip_suffix(b"\r\n").unwrap_or(t);
+                if body.windows(2).any(|w| matches!(w, [0x0d, 0x0a])) {
                     return Err(PduError::Encode {
                         context: Self::NAME,
-                        reason: "routing token contains its own terminator",
+                        reason: "routing token contains an embedded terminator",
                     });
                 }
                 Ok(())
@@ -312,18 +333,33 @@ impl X224Cookie {
         }
     }
 
+    /// True when the bytes already open with `Cookie: msts=`.
+    fn carries_prefix(t: &[u8]) -> bool {
+        t.starts_with(Self::ROUTING_PREFIX)
+    }
+
+    /// True when the bytes already close with the CRLF the field ends on.
+    fn carries_terminator(t: &[u8]) -> bool {
+        t.ends_with(b"\r\n")
+    }
+
     fn encode(&self, w: &mut Writer<'_>) -> PduResult<()> {
         match self {
             Self::RoutingToken(t) => {
-                w.bytes(Self::ROUTING_PREFIX);
+                if !Self::carries_prefix(t) {
+                    w.bytes(Self::ROUTING_PREFIX);
+                }
                 w.bytes(t);
+                if !Self::carries_terminator(t) {
+                    w.bytes(b"\r\n");
+                }
             }
             Self::MstsHash(s) => {
                 w.bytes(Self::HASH_PREFIX);
                 w.bytes(s.as_bytes());
+                w.bytes(b"\r\n");
             }
         }
-        w.bytes(b"\r\n");
         Ok(())
     }
 
@@ -905,6 +941,57 @@ mod tests {
             X224ConnectionRequest::decode(&mut Reader::new(&bytes)).unwrap(),
             pdu
         );
+    }
+
+    /// What gnome-remote-desktop's handover actually hands us: the
+    /// `LoadBalanceInfo` of a Server Redirection is the whole routing token,
+    /// `Cookie: msts=` and CRLF included. Adding a second prefix and a second
+    /// terminator produced a request the server could not read, and refusing
+    /// it outright stopped the reconnection dead
+    /// (`docs/RDP_SPEC_NOTES.md` §1.13).
+    #[test]
+    fn a_complete_routing_token_is_written_through_untouched() {
+        let token = b"Cookie: msts=3640205228.15629.0000\r\n".to_vec();
+        let cookie = X224Cookie::RoutingToken(token.clone());
+        let pdu = X224ConnectionRequest {
+            cookie: Some(cookie),
+            nego: Some(NegotiationRequest {
+                flags: 0,
+                requested_protocols: security_protocol::HYBRID,
+            }),
+            correlation: None,
+        };
+        let bytes = encode(&pdu);
+
+        assert_eq!(
+            bytes.windows(13).filter(|w| *w == b"Cookie: msts=").count(),
+            1,
+            "the prefix is written once, not twice"
+        );
+        assert!(
+            bytes.windows(token.len()).any(|w| w == token),
+            "the token reaches the wire byte for byte"
+        );
+        // Decoding strips the prefix and the terminator the field carries, so
+        // the value differs from what went in while the bytes do not. That is
+        // the point: both shapes name the same wire field.
+        let back = X224ConnectionRequest::decode(&mut Reader::new(&bytes)).unwrap();
+        assert_eq!(
+            back.cookie,
+            Some(X224Cookie::RoutingToken(b"3640205228.15629.0000".to_vec()))
+        );
+        assert_eq!(encode(&back), bytes, "re-encoding is stable");
+    }
+
+    /// A CRLF in the middle would split the field in two on the wire. That is
+    /// still refused; only a trailing one is a terminator.
+    #[test]
+    fn a_routing_token_with_an_embedded_terminator_is_refused() {
+        let cookie = X224Cookie::RoutingToken(b"one\r\ntwo".to_vec());
+        assert!(cookie.check().is_err());
+        assert!(X224Cookie::RoutingToken(b"one\r\n".to_vec())
+            .check()
+            .is_ok());
     }
 
     /// The two cookie forms are mutually exclusive and the decoder tells them
