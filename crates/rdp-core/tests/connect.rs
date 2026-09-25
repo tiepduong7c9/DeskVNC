@@ -1299,9 +1299,9 @@ async fn an_egfx_frame_is_decoded_and_emitted_at_its_mapped_origin() {
         "capability set versions 8 and 8.1, and nothing with H.264 in it"
     );
     assert_eq!(
-        recorded.egfx_cache_offer,
-        Some(0),
-        "nothing in this build saves a cache between sessions"
+        recorded.egfx_cache_offer, None,
+        "nothing in this build saves a cache between sessions, so it offers \
+         none rather than offering an empty one (RDP_SPEC_NOTES 1.18)"
     );
 
     // Frame acknowledgement is flow control, not a formality: getting it

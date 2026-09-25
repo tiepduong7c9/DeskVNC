@@ -681,3 +681,39 @@ disagrees produces a named error instead of a picture assembled from the
 wrong offset. The test that pins this builds the bytes by hand: a round trip
 would prove only that our encoder and decoder agree with each other, which
 they did while both were wrong.
+
+### 1.18 SETTLED: an empty cache import offer is not the same as no offer
+
+`crates/rdp-core/src/channels/egfx/mod.rs`, the `CapsConfirm` arm.
+
+**What was believed.** That MS-RDPEGFX 3.3.5.4 puts a cache import offer
+after the capability confirm unconditionally, and that a client with nothing
+cached sends one of zero entries: "the server answers with an equally empty
+reply and both sides start from nothing".
+
+**What is true.** The offer is for a client that has a persistent cache to
+offer. A client with none has nothing to offer and says nothing. An offer of
+zero entries is a different statement, and Windows will not have it.
+
+**How we know.** With the framing of section 1.15 corrected, a Windows host
+accepted the advertisement and confirmed capability set 8.1:
+
+```
+advertising the graphics capabilities versions=["0x00080004", "0x00080105"]
+the graphics capabilities were confirmed version=524549
+the server latched an error code ... (0x0000112f)
+```
+
+1.6 milliseconds separate the confirm from `ERRINFO_GRAPHICSSUBSYSTEMFAILED`,
+and the empty offer is the only thing this client sends between them.
+
+This is the second half of section 1.11 and it was two faults, not one. The
+first was ours to see: the advertisement carried a segment envelope no server
+expects (1.15). The second only became visible once the first was fixed,
+because a server that refuses the advertisement never gets far enough to
+refuse what follows it.
+
+The mock server waited for the offer before sending its first frame, so a
+correct client hung where a wrong one had passed. It now sends the frame
+after the confirm, which is what gnome-remote-desktop does: reset, create,
+map, draw, with no cache exchange anywhere in it.

@@ -1395,11 +1395,22 @@ impl ChannelScript {
                         }],
                     )
                     .await?;
+                    // The confirm is the last thing in the opening exchange,
+                    // so this is where the picture starts. A client with no
+                    // persistent cache sends no import offer, and waiting for
+                    // one is how this mock used to hang on a correct client
+                    // (`docs/RDP_SPEC_NOTES.md` §1.18).
+                    if self.malformed_egfx {
+                        self.send_malformed_egfx(stream).await?;
+                    } else {
+                        self.send_frame(stream).await?;
+                    }
                 }
+                // A client that does have a cache to offer still gets an
+                // answer, and the count is recorded either way so a test can
+                // assert that this build offers nothing.
                 EgfxPdu::CacheImportOffer { entries } => {
                     recorded.lock().expect("not poisoned").egfx_cache_offer = Some(entries.len());
-                    // The offer is the last thing in the opening exchange, so
-                    // this is where the picture starts.
                     self.send_egfx(
                         stream,
                         &[EgfxPdu::CacheImportReply {
@@ -1407,11 +1418,6 @@ impl ChannelScript {
                         }],
                     )
                     .await?;
-                    if self.malformed_egfx {
-                        self.send_malformed_egfx(stream).await?;
-                    } else {
-                        self.send_frame(stream).await?;
-                    }
                 }
                 EgfxPdu::FrameAcknowledge {
                     queue_depth,

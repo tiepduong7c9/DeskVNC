@@ -161,10 +161,16 @@ fn opening_the_channel_advertises_versions_eight_and_eight_one() {
     }
 }
 
-/// The confirm settles the version and triggers the cache import offer, which
-/// is empty because nothing in this build saves a cache between sessions.
+/// The confirm settles the version and is answered with silence.
+///
+/// MS-RDPEGFX 3.3.5.4 puts a cache import offer here for a client that has a
+/// persistent cache to offer. Nothing in this build saves one between
+/// sessions, so there is nothing to offer, and an offer of zero entries is a
+/// different statement: Windows confirms the capability sets and then ends
+/// the session with ERRINFO_GRAPHICSSUBSYSTEMFAILED within two milliseconds
+/// of receiving one (`docs/RDP_SPEC_NOTES.md` §1.18).
 #[test]
-fn a_confirm_settles_the_version_and_offers_an_empty_cache() {
+fn a_confirm_settles_the_version_and_offers_no_cache() {
     let mut egfx = Egfx::new();
     let mut replies = ReplyBuf::default();
     let mut events = Vec::new();
@@ -183,11 +189,11 @@ fn a_confirm_settles_the_version_and_offers_an_empty_cache() {
     assert_eq!(egfx.confirmed(), Some(caps_version::V8));
 
     let sent = queued(&replies);
-    assert_eq!(sent.len(), 1);
-    match &sent[0] {
-        EgfxPdu::CacheImportOffer { entries } => assert!(entries.is_empty()),
-        other => panic!("expected a cache import offer, got {:?}", other.cmd_id()),
-    }
+    assert!(
+        sent.is_empty(),
+        "a client with no persistent cache offers nothing, got {:?}",
+        sent.iter().map(EgfxPdu::cmd_id).collect::<Vec<_>>()
+    );
 }
 
 /// A confirm for a version we never offered means the two ends disagree about

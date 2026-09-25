@@ -304,18 +304,16 @@ impl Egfx {
                     "the graphics capabilities were confirmed"
                 );
                 self.confirmed = Some(capset.version);
-                // MS-RDPEGFX 3.3.5.4 puts the cache offer after the confirm.
-                // Ours is empty, because nothing in this build saves a cache
-                // between sessions (PRDRDP/04 §3.7); the server answers with
-                // an equally empty reply and both sides start from nothing.
-                replies.emit(|buf| {
-                    encode(
-                        &EgfxPdu::CacheImportOffer {
-                            entries: Vec::new(),
-                        },
-                        buf,
-                    )
-                })
+                // MS-RDPEGFX 3.3.5.4 puts a cache offer after the confirm,
+                // and only for a client that has a persistent cache to
+                // offer. Nothing in this build saves one between sessions
+                // (PRDRDP/04 §3.7), so there is nothing to offer and we say
+                // nothing. An offer of zero entries is not the same
+                // statement: Windows confirms our capability sets and then
+                // ends the session with ERRINFO_GRAPHICSSUBSYSTEMFAILED
+                // within two milliseconds of receiving one
+                // (`docs/RDP_SPEC_NOTES.md` §1.18).
+                Ok(())
             }
             EgfxPdu::CreateSurface {
                 surface_id,

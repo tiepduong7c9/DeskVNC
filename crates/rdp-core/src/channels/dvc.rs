@@ -1086,13 +1086,33 @@ mod tests {
     /// graphics channel that is nearly every message. Handing one to
     /// `DvcReassembler` as if it were a continuation is refused as a fragment
     /// with no first, which killed every EGFX session at the capability
-    /// confirm. Both shapes have to work, and the reply proves the message
+    /// confirm. Both shapes have to work, and a reply proves the message
     /// reached the handler intact.
+    ///
+    /// The reply is a frame acknowledgement rather than the answer to the
+    /// confirm, because a confirm is now answered with silence: a client with
+    /// no persistent cache offers none (`docs/RDP_SPEC_NOTES.md` §1.18). The
+    /// confirm stays in the payload because it is the message whose framing
+    /// this is about.
     #[test]
     fn a_whole_message_arrives_as_one_data_pdu_and_a_split_one_is_reassembled() {
-        let confirm = egfx_message(&rdp_pdu::vc::egfx::EgfxPdu::CapsConfirm {
-            capset: Capset::new(caps_version::V8_1, &[0, 0, 0, 0]),
-        });
+        // Server to client, so the envelope is still there: descriptor
+        // SINGLE then the RDP 8.0 flags byte (`egfx_message`).
+        let mut body = vec![0xE0, 0x04];
+        for pdu in [
+            rdp_pdu::vc::egfx::EgfxPdu::CapsConfirm {
+                capset: Capset::new(caps_version::V8_1, &[0, 0, 0, 0]),
+            },
+            rdp_pdu::vc::egfx::EgfxPdu::StartFrame {
+                timestamp: 1,
+                frame_id: 4,
+            },
+            rdp_pdu::vc::egfx::EgfxPdu::EndFrame { frame_id: 4 },
+        ] {
+            pdu.encode_checked(&mut Writer::new(&mut body))
+                .expect("encodes");
+        }
+        let confirm = body;
 
         // One `DYNVC_DATA` carrying the whole message.
         let (mut mux, channel_id) = opened();
@@ -1109,7 +1129,7 @@ mod tests {
         )
         .expect("a whole message in one data pdu");
         let whole = egfx_payloads(&out);
-        assert_eq!(whole.len(), 1, "the confirm was answered");
+        assert_eq!(whole.len(), 1, "the frame was acknowledged");
 
         // The same message split across a `DATA_FIRST` and a `DATA`.
         let (mut mux, channel_id) = opened();
