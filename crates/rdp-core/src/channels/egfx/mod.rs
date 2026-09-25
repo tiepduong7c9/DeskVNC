@@ -374,21 +374,75 @@ impl Egfx {
                 )?;
                 self.damaged(surface_id, dest_rect)
             }
-            // `WIRE_TO_SURFACE_2` carries a persistent codec context, which
-            // only the progressive codec uses (MS-RDPEGFX 2.2.2.2). We never
-            // advertise it, so this is a server drawing with something it was
-            // not offered.
-            EgfxPdu::WireToSurface2 { codec_id, .. } => Err(RdpError::Protocol(format!(
-                "the server sent a wire to surface 2 command in codec 0x{codec_id:04x}, which \
-                 needs a persistent codec context this client never created \
-                 (MS-RDPEGFX 2.2.2.2)"
-            ))),
-            // We never created a context, so there is none to delete. Saying
-            // so once is better than treating a tidy up as an error.
-            EgfxPdu::DeleteEncodingContext { surface_id, .. } => {
+            // `WIRE_TO_SURFACE_2` is the progressive codec's own form
+            // (MS-RDPEGFX 2.2.2.2). It carries no destination rectangle,
+            // because a progressive frame's tiles carry their own coordinates
+            // inside the stream, so the destination is the whole surface and
+            // `RFX_PROGRESSIVE_REGION` places every tile within it.
+            //
+            // The codec context is the surface's progressive tile store,
+            // which already outlives the message for exactly this reason: a
+            // first pass leaves a coarse tile and a later `WBT_TILE_UPGRADE`
+            // refines it in place (`surface::Surface::progressive`).
+            EgfxPdu::WireToSurface2 {
+                surface_id,
+                codec_id,
+                codec_context_id,
+                pixel_format,
+                bitmap_data,
+            } => {
+                if codec_id != CODEC_CAPROGRESSIVE {
+                    // Every other codec draws through `_1`, which names a
+                    // destination. One arriving here has nowhere to go.
+                    return Err(RdpError::Protocol(format!(
+                        "the server sent a wire to surface 2 command in codec \
+                         0x{codec_id:04x}; only the progressive codec uses this form \
+                         (MS-RDPEGFX 2.2.2.2)"
+                    )));
+                }
+                let Self {
+                    surfaces, decoders, ..
+                } = self;
+                let surface = surfaces.get_mut(surface_id, "a wire to surface 2 command")?;
+                let has_alpha = surface.has_alpha;
+                let whole = surface.whole();
+                let (progressive, mut dst) =
+                    surface.progressive_view(whole, "a wire to surface 2 command")?;
+                decode::wire_to_surface(
+                    codec_id,
+                    pixel_format,
+                    has_alpha,
+                    bitmap_data.as_slice(),
+                    decoders,
+                    progressive,
+                    &mut dst,
+                )?;
                 tracing::trace!(
                     surface_id,
-                    "a delete encoding context with no context to delete"
+                    codec_context_id,
+                    "a progressive frame reached the whole surface"
+                );
+                self.damaged(surface_id, whole)
+            }
+            // We never created a context, so there is none to delete. Saying
+            // so once is better than treating a tidy up as an error.
+            // The context is the surface's progressive tile store, so
+            // deleting it is forgetting every tile that store holds. A later
+            // `WBT_TILE_UPGRADE` refines a tile in place, and refining one
+            // the server believes it has discarded is how a frame comes back
+            // with another frame's coefficients in it.
+            EgfxPdu::DeleteEncodingContext {
+                surface_id,
+                codec_context_id,
+            } => {
+                let surface = self
+                    .surfaces
+                    .get_mut(surface_id, "a delete encoding context")?;
+                surface.forget_progressive();
+                tracing::debug!(
+                    surface_id,
+                    codec_context_id,
+                    "the codec context was deleted"
                 );
                 Ok(())
             }

@@ -593,3 +593,35 @@ The mock server in `crates/rdp-core/tests/common/` stripped the envelope,
 which is how a client that sent one passed every test in the tree and was
 refused by the first real server it met. It now refuses the envelope the way
 FreeRDP does.
+
+### 1.16 SETTLED: the progressive codec draws through `WIRE_TO_SURFACE_2`
+
+`crates/rdp-core/src/channels/egfx/mod.rs`, the `WireToSurface2` arm.
+
+**What was believed.** That `RDPGFX_WIRE_TO_SURFACE_PDU_2`
+(MS-RDPEGFX 2.2.2.2) needs "a persistent codec context this client never
+created", so any server sending one was drawing with something it had not
+been offered. The arm was a refusal.
+
+**What is true.** The persistent codec context is the surface's progressive
+tile store, which this client has had all along and for exactly this reason:
+a first pass leaves a coarse tile behind and a later `WBT_TILE_UPGRADE`
+refines that same tile in place, so the store outlives the message and dies
+with the surface (`surface::Surface::progressive`, MS-RDPEGFX 2.2.4.2).
+
+The only real difference from `_1` is that `_2` names no destination
+rectangle. It does not need one: an `RFX_PROGRESSIVE_REGION` carries the
+coordinates of every tile inside the stream, so the destination is the whole
+surface.
+
+**How we know.** gnome-remote-desktop confirmed capability set 8.1, reset the
+pipeline at 1280x726, created surface 0, mapped it to the output, and sent a
+27 KiB frame in codec 0x0009. Every step of that is in the client log. The
+frame was `WIRE_TO_SURFACE_2` and the refusal ended the session on the first
+frame of pixels that had ever reached this client.
+
+`RDPGFX_DELETE_ENCODING_CONTEXT` (2.2.2.3) now clears that store rather than
+tracing that there was nothing to clear: a server that deletes a context will
+not send the upgrades that would have refined what is in it, and refining a
+tile the server believes it discarded is how one frame comes back carrying
+another frame's coefficients.

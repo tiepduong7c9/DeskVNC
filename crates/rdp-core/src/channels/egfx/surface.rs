@@ -109,6 +109,30 @@ pub struct Surface {
 }
 
 impl Surface {
+    /// The whole surface as a rectangle.
+    ///
+    /// What a `WIRE_TO_SURFACE_2` draws into: that PDU carries no
+    /// destination, because a progressive frame's tiles carry their own
+    /// coordinates (MS-RDPEGFX 2.2.2.2, 2.2.4.2).
+    #[must_use]
+    pub const fn whole(&self) -> RectExclusive {
+        RectExclusive {
+            left: 0,
+            top: 0,
+            right: self.width,
+            bottom: self.height,
+        }
+    }
+
+    /// Forget every progressive tile this surface holds.
+    ///
+    /// The codec context of MS-RDPEGFX 2.2.2.3 is this store, and a server
+    /// that deletes it will not send the upgrades that would have refined
+    /// what is in it.
+    pub fn forget_progressive(&mut self) {
+        self.progressive = ProgressiveState::new();
+    }
+
     /// Bytes between the starts of two rows.
     #[must_use]
     pub fn stride(&self) -> usize {

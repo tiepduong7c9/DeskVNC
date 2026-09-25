@@ -639,6 +639,57 @@ fn a_progressive_rectangle_reaches_the_progressive_decoder() {
     .expect("a well formed progressive message");
 }
 
+/// gnome-remote-desktop draws every frame through `WIRE_TO_SURFACE_2`, which
+/// is the progressive codec's own form: no destination rectangle, because the
+/// tiles inside the stream carry their own coordinates (MS-RDPEGFX 2.2.2.2).
+/// Refusing it outright left a session that authenticated, opened the
+/// graphics channel, confirmed capabilities, created and mapped a surface,
+/// and then ended on the first frame of pixels
+/// (`docs/RDP_SPEC_NOTES.md` §1.16).
+#[test]
+fn a_progressive_frame_arrives_through_wire_to_surface_2() {
+    let (mut egfx, mut events, mut replies) = confirmed();
+    mapped_surface(&mut egfx, 1, 16, 16, 0, 0);
+    egfx.message(
+        &message(&[EgfxPdu::WireToSurface2 {
+            surface_id: 1,
+            codec_id: CODEC_CAPROGRESSIVE,
+            codec_context_id: 9,
+            pixel_format: pixel_format::XRGB_8888,
+            bitmap_data: rdp_pdu::Payload::new(&progressive_sync(0xCACC_ACCA)),
+        }]),
+        ctx(),
+        &mut events,
+        &mut replies,
+    )
+    .expect("a well formed progressive message");
+}
+
+/// Every other codec draws through `_1`, which names a destination. One
+/// arriving through `_2` has nowhere to go, and the refusal says which codec
+/// it was rather than naming the form alone.
+#[test]
+fn a_wire_to_surface_2_in_another_codec_is_refused_by_name() {
+    let (mut egfx, mut events, mut replies) = confirmed();
+    mapped_surface(&mut egfx, 1, 16, 16, 0, 0);
+    let err = egfx
+        .message(
+            &message(&[EgfxPdu::WireToSurface2 {
+                surface_id: 1,
+                codec_id: codec_id::UNCOMPRESSED,
+                codec_context_id: 9,
+                pixel_format: pixel_format::XRGB_8888,
+                bitmap_data: rdp_pdu::Payload::new(TWO_PIXELS),
+            }]),
+            ctx(),
+            &mut events,
+            &mut replies,
+        )
+        .expect_err("uncompressed has no business here");
+    assert!(err.to_string().contains("0x0000"), "{err}");
+    assert!(err.to_string().contains("progressive"), "{err}");
+}
+
 /// A bitstream the progressive decoder refuses is named the way every other
 /// codec's refusal is named, and carries no byte of the bitstream
 /// (PRDRDP/12 §6.4).
