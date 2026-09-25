@@ -383,6 +383,43 @@ them. And it sends the bandwidth triplet more than once before moving on.
 `autodetect_step` keys on the measurement and ignores the phase for that
 reason.
 
+### 1.11 OPEN: the graphics pipeline is advertised nowhere, and enabling it fails
+
+`crates/rdp-pdu/src/gcc/client.rs`, `early_capability_flags::SUPPORT_DYNVC_GFX_PROTOCOL`.
+`crates/rdp-core/src/channels/egfx/`.
+
+**What was believed.** Section 1.1 of this document says of the ZGFX token
+table that it "is now live", because "rdp-core's graphics channel decompresses
+through it, so this table is on the path of every EGFX frame".
+
+**What is true.** It is on no path at all.
+`RNS_UD_CS_SUPPORT_DYNVC_GFX_PROTOCOL` is defined and never set, in any crate.
+Without it in `TS_UD_CS_CORE.earlyCapabilityFlags` no server offers
+`Microsoft::Windows::RDS::Graphics`, so `channels::egfx` has never run against
+a server. Windows degrades silently to the legacy bitmap path, which is why
+nothing ever looked wrong.
+
+**How we know.** No Windows session in any trace was offered the graphics
+channel. Setting the flag made both servers offer or demand it, and both then
+failed:
+
+* Windows opens the channel and ends the session on our `RDPGFX_CAPS_ADVERTISE`
+  with `ERRINFO_GRAPHICSSUBSYSTEMFAILED` (0x0000112f). The advertisement is
+  two capability sets, `V8` and `V8_1`, with no flags.
+* gnome-remote-desktop requires the flag to proceed at all, logging "Client
+  did not advertise support for the Graphics Pipeline, closing connection" and
+  hanging up after licensing without it. With it, the connection completes to
+  `font map received`, negotiates `drdynvc` version 1, and then never creates
+  the graphics channel. Since that server paints only through EGFX, the result
+  is a connected session showing a black screen.
+
+So the flag was reverted rather than shipped. The work this opens is real and
+is not a flag: `RDPGFX_CAPS_ADVERTISE` has to be accepted by a Windows host
+before any of the decoders underneath it matter, and the `drdynvc` version 1
+path has to create a channel before gnome-remote-desktop can paint. Until
+then, this client cannot display a gnome-remote-desktop session at all, and
+section 1.1's risk assessment is premature rather than wrong.
+
 ## 2. Confirmed errors in the design documents
 
 Each of these was found by implementing against the document, and each is a case
