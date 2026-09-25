@@ -413,147 +413,120 @@ failed:
   the graphics channel. Since that server paints only through EGFX, the result
   is a connected session showing a black screen.
 
-So the flag was reverted rather than shipped. The work this opens is real and
-is not a flag: `RDPGFX_CAPS_ADVERTISE` has to be accepted by a Windows host
-before any of the decoders underneath it matter, and the `drdynvc` version 1
-path has to create a channel before gnome-remote-desktop can paint. Until
-then, this client cannot display a gnome-remote-desktop session at all, and
-section 1.1's risk assessment is premature rather than wrong.
+So the flag is a switch rather than a default. `mcs::GFX_ENV`
+(`DESKVNC_RDP_GRAPHICS_PIPELINE=1`) sets it, and nothing else does, so
+testing one of these two servers cannot break the other. Shipping it on
+traded a working Windows session for a GNOME one, which is a trade nobody
+asked for.
 
-## 2. Confirmed errors in the design documents
+Section 1.12 revises the GNOME half of this entry: that server was not
+waiting on the graphics channel at all.
 
-Each of these was found by implementing against the document, and each is a case
-where following the text would produce a client that does not work. They are
-recorded here so the design set can be corrected.
+### 1.12 SETTLED: gnome-remote-desktop hands the session over by redirecting to itself
 
-### 2.1 Wrong bytes on the wire
+`crates/rdp-core/src/session/redirect.rs`, `Redirection::from_packet`.
 
-| Where | Says | Is |
-|---|---|---|
-| `PRDRDP/14 §5.2` | NTLM negotiate flags `0xE2088237` | `0xE2888235`. The stated value sets `OEM`, which the same section forbids, and clears `TARGET_INFO`, without which NTLMv2 cannot proceed. MS-NLMP 4.2.4.3 carries `35 82 88 e2`. |
-| `PRDRDP/13 §4.8.3` | General capability set `compressionTypes` and `compressionLevel` are `u32` | Both are `u16` (MS-RDPBCGR 2.2.7.1.1); the set is 24 bytes, not 32. A server answers the wrong size with `ERRINFO_CAPABILITYSETTOOLARGE` around twenty PDUs later. |
-| `PRDRDP/13 §5.1` | `TS_PROTOCOL_VERSION` is the high 12 bits, value `0x0010` | `0x0010` is already the version shifted into place. Shifting again yields `pduType 0x0107` where the wire carries `0x0017`. |
-| `PRDRDP/13 §4.2.3` | Attach User Confirm is `2E <result> <initiator>` | MCS `Result` is a sixteen value PER `ENUMERATED`, so it is four bits and its top bit sits in the first octet. `result = 15` is `2D E0`, not `2E 0F`. |
-| `PRDRDP/13 §3.3` | The two octet PER length determinant is `81 <hi> <lo>` | X.691 §10.9.3.7 makes it two octets, `(0x80 or hi) lo`. The section's own trace bytes `81 2a` are 298, which is its stated 284 plus a 14 byte wrapper. |
-| `PRDRDP/05 §5.2` | The compressed drdynvc variants use the RDP 6.1 bulk compressor | MS-RDPEDYC uses RDP 8.0. Following this sends the payload to the wrong decompressor. |
-| `PRDRDP/13 §6.4` | An uncompressed segment is `Literal(payload)` | The flags byte is not decoration. `PACKET_AT_FRONT` and `PACKET_FLUSHED` instruct the RDP 8.0 history window, and an uncompressed segment still contributes to it, so dropping them decodes the next compressed segment against a wrong history. |
-| `PRDRDP/04 §4.6.5` | The RemoteFX inverse DWT is unmodified 5/3 | See §1.2 above. |
-| `PRDRDP/04 §4.9.2` | An upgrade pass shifts the retained coefficients before adding the refinement | Nothing is shifted. A tile's stored coefficients are already at the final scale, because each pass was dequantized by its own bit position less one when it arrived, and a refinement is added at the new, smaller shift: `m_new << (posNew - 1)` is `m_old << (posOld - 1)` plus `v << (posNew - 1)`. Following the text multiplies every retained coefficient by `2^numBits` on every pass. |
-| `PRDRDP/04 §4.9.3` | SRL is "a run of zeros with a Golomb style escape, then a sign bit per non zero value" | A sign bit alone cannot carry a value. A coefficient that becomes non zero in this pass also needs its magnitude, `numBits` bits of it, and the width is forced rather than chosen (§1.6.2). |
+**What was believed.** Section 1.11 read the GNOME black screen as a graphics
+failure: the connection completed, `drdynvc` negotiated, no graphics channel
+appeared, and the server paints only through EGFX.
 
-### 2.2 Signatures that cannot compile or cannot fire
+**What is true.** The graphics channel never appeared because the connection
+we were watching had already been superseded. gnome-remote-desktop 50 runs
+its system daemon and the user's session as separate RDP servers and moves a
+client between them with a Server Redirection PDU (MS-RDPBCGR 2.2.13.1). That
+redirection names **no target**: the client returns to the same host and the
+same port, and the daemon tells the returning connection apart from a fresh
+one by peeking the `Cookie: msts=` routing token on the X.224 Connection
+Request. Our `from_packet` required a target and refused the whole packet, so
+we never reconnected, and the daemon eventually gave up on a client that was
+still sitting on the old socket.
 
-* `PRDRDP/13 §5.2`'s `decode_io_pdu(reader, ctx)` must guess the PDU class,
-  which is the exact bug the rest of §5.2 exists to prevent: the first two bytes
-  of a 64 byte Demand Active are indistinguishable from `SEC_INFO_PKT`. The
-  class is a parameter.
-* `PRDRDP/13 §5.4`'s `push_scancode(code: u8, ...)` is required to reject codes
-  above `0xFF`, which a `u8` cannot hold.
-* `PRDRDP/13 §5.5`'s `FastPathReassembler::push` elides the return lifetime to
-  `&mut self`, so the single fragment case cannot return the borrow of the
-  caller's slice that the next paragraph requires.
-* `PRDRDP/13 §6.1`'s `ChannelReassembler` sketch has the same problem, and its
-  `expected: usize` cannot distinguish "nothing in progress" from "a zero length
-  message in progress".
-* `PRDRDP/14 §3.13`'s transition table has a row with no representable action.
+**How we know.** The server's journal, from the window in which the graphics
+flag was set:
 
-### 2.3 Counts, widths and citations
+```
+[RDP] Sending server redirection
+[DaemonSystem] Aborting handover, removing remote client with remote id ...
+ERRINFO_CB_CONNECTION_CANCELLED [0x00010409]
+```
 
-* `PRDRDP/02 §13`'s commit plan cannot be executed as written: commits 1 and 3
-  cannot be separated, because `ConnectOptions::security_pref` is typed on a
-  `SecurityType` that stays behind. Its call site counts are also low by half
-  (sixteen `ConnectOptions::new` sites named, 32 present).
-* `PRDRDP/13 §4.8.3`'s Window List capability set totals 11 bytes, not the 12 a
-  reader assumes from its neighbours.
-* `PRDRDP/04 §4.9.4`'s progressive tile is 25.5 KiB and is 24 KiB. Its
-  `BitSet4096` per component cannot carry what the SRL pass needs, which is a
-  three way answer per coefficient: still zero, positive, or negative. The
-  retained coefficient already carries it, because dequantization is a left
-  shift, so it maps zero to zero and preserves sign, and a refinement only ever
-  adds magnitude in the direction a coefficient already points. So the bitsets
-  are 1.5 KiB per tile of state that duplicates the state next to it. The
-  surface totals in `§4.9.4`, `§11.1` and `§11.3` follow: 12.7, 22.9 and
-  50.8 MiB become 11.95, 21.6 and 47.8.
-* `PRDRDP/13 §5.6.2`'s palette update is 774 bytes, not 772, which matches
-  neither the slow path nor the body alone.
-* `PRDRDP/04 §6.4` to `§6.6` cite pointer subsections that are off by one from
-  `.4.5` onward, with position and system swapped. `PRDRDP/13 §5.6.4` is right.
-* `PRDRDP/04 §3` cites four EGFX section numbers belonging to other PDUs.
-  `PRDRDP/13 §6.3` is right.
-* `PRDRDP/13 §6.2` mis-numbers the drdynvc capabilities exchange; `PRDRDP/05
-  §5.2` is right, and 2.2.1.3 does not exist.
-* `PRDRDP/11 §2.10` claims MS-CSSP section 4 holds a `TSRequest` worked example.
-  It holds one hex dump and it is a `TSCredentials` carrying smart card
-  credentials. There is no published `pubKeyAuth` vector in any construction.
-* `PRDRDP/14 §3.2`'s worked example is captioned as a 40 byte NTLM NEGOTIATE and
-  encodes 42, carrying the extra two bytes correctly through all four enclosing
-  lengths.
-* `PRDRDP/11 §2.10` and `PRDRDP/14 §2.4` disagree on a test file name.
+and, in the daemon binary, `Cookie: msts=`, `RoutingToken: Aborting current
+peek operation (Timeout reached)`, `utf16_encoded_redirection_guid` and
+`org.gnome.RemoteDesktop.Rdp.Handover`.
 
-### 2.4 Performance claims that measurement contradicts
+A redirection is now refused only when it names neither a host to dial nor a
+token to present, which is the one case where the next attempt would be byte
+for byte the one that just failed. `MAX_CHAINED_REATTEMPTS` bounds a handover
+chain at eight either way.
 
-* `PRDRDP/04 §4.5.3` calls the planar delta pass a serial per row dependency
-  that does not vectorise, and budgets it by analogy to Tight's gradient filter
-  at 274 MPix/s. The dependency is vertical only, it vectorises fully, and it
-  measures 27900 MPix/s. Tight's filter also predicts leftward, which is what
-  makes that one serial. `§4.5.6`'s suggested hand interleaving is therefore
-  unnecessary.
-* `PRDRDP/04 §11.2`'s NSCodec split is the wrong way round: it budgets 3.2 ms
-  for the plane RLE and 2.0 ms for the conversion; measured, they are 0.98 ms
-  and 3.85 ms. The codec still beats its total, but a regression would be
-  attributed to the wrong stage.
-* `PRDRDP/04 §11.2`'s RLGR row asks for both a coefficient rate and an input bit
-  rate, and which one is achievable is decided by how many coefficients are non
-  zero. On a flat tile we beat the coefficient target; on a noisy tile we beat
-  the input target. Both cannot hold at once.
-* `PRDRDP/04 §2.3`'s stride formula divides bits by eight before rounding, so it
-  yields zero for a four pixel wide 1 bpp bitmap.
-* `PRDRDP/04 §4.9.5` budgets progressive at 250 MPix/s for a first pass and
-  that one holds: measured 277 MPix/s at 1080p, 7.5 ms. What `§11.2` has no row
-  for is the pass that costs the most. `WBT_TILE_SIMPLE` measures 202 MPix/s,
-  because a whole tile's coefficients are non zero where a coarse first pass's
-  are mostly zero, so the entropy stage does several times the work for the
-  same pixels. A server that stops sending upgrades and starts sending simple
-  tiles gets slower, not faster, and the table would attribute the regression
-  to nothing.
+What this does not settle is the Windows half of 1.11, which is a real
+`RDPGFX_CAPS_ADVERTISE` rejection and unrelated to any of this.
 
-## 3. Contradictions needing an owner's decision
+### 1.13 SETTLED: `LoadBalanceInfo` is the whole routing token, not the part after `msts=`
 
-These are not errors. They are two documents disagreeing about something that is
-a judgement call, and the code had to pick one.
+`crates/rdp-pdu/src/x224.rs`, `X224Cookie::RoutingToken`.
 
-| Question | The disagreement | What the code does |
-|---|---|---|
-| Is the server certificate parsed at all? | `PRDRDP/03 §2.6` says never; `PRDRDP/13 §4.5` says parse both variants partially. This is a pre authentication attack surface decision. | Follows `13`. |
-| How do we answer a licence request? | `PRDRDP/03 §2.8` says send `NEW_LICENSE_REQUEST`; `PRDRDP/13 §4.7` says send an `ERROR_ALERT`, because an exchange we cannot finish leaves the server waiting and the user looking at nothing. Choosing `§2.8` commits to RSA under the server certificate, which is real work. | Follows `13`. |
-| Where does the codec `Reader` live? | `PRDRDP/04 §4.1` says `rdp-pdu` and `rdp-codecs` re-exports it; `PRDRDP/12 §2.2.2` forbids that dependency, and the codec payload boundary is why it exists. | Follows `12`. |
-| Must a CHALLENGE echo `NTLMSSP_NEGOTIATE_SIGN`? | The 2022-07-26 MS-NLMP erratum says yes. Enforcing it refuses hosts predating the erratum. | Accepted with a log line, not refused. |
-| What colour depth do the slow presets ask for? | `PRDRDP/04 §9.2` argues for 16 bpp at length; the code resolves `Low` and `BlackAndWhite` to 15 bpp. | 15 bpp, unreconciled. |
-| What is in the stored `rdp_settings` blob? | `PRDRDP/08 §2.5` specifies an `RdpSettings` struct that does not exist, and its field list disagrees with `remote_core::RdpOptions`, which does, on six fields (`domain`, `color_depth`, `codecs`, `multi_monitor`, `keyboard_layout`, `gateway`). Four more of its fields (`clipboard`, `microphone`, `console_session`, `restricted_admin`) exist in neither. | `RdpSettings` is a versioned envelope carrying `v` plus a flattened `RdpOptions`, with the four extra fields on the envelope. Because they are flattened, moving one into `RdpOptions` later changes no stored blob and does not bump `v`. |
-| Does probing 3389 slow down a scan that finds nothing? | `PRDRDP/08 §4.5` requires one rate limiter slot per connection and makes it a measured acceptance criterion. The owner's standing instruction is that the probe must not make a scan slower for people with no RDP hosts. Both cannot hold: probing a port everywhere costs a connection everywhere. | Follows `§4.5`. On a /24 at the default 500 per second, pacing goes from about 0.5 s to about 1.0 s. It adds no latency to the critical path, a closed port refuses in about a millisecond on a LAN, `probe_rdp: false` opens nothing, and a host that does answer costs one connection fewer overall because the certificate read shares the probe's socket. |
-| How large may a dynamic channel message be? | `PRDRDP/13 §2.8` fixes 4 MiB; `PRDRDP/05 §5.2` gives graphics 32 MiB. An uncompressed 4K surface command is just under 32 MiB, so 4 MiB refuses a legal PDU. | 4 MiB default, up to the 64 MiB ceiling on request. |
+**What was believed.** That `X224Cookie::RoutingToken` holds the opaque token
+that follows `Cookie: msts=`, so the encoder owns both the prefix and the
+CRLF. A token arriving with a terminator of its own was treated as malformed
+and refused before a byte was written.
 
-## 4. Where the specification itself is ambiguous
+**What is true.** The `LoadBalanceInfo` field of a Server Redirection
+(MS-RDPBCGR 2.2.13.1) is the routing token in full: prefix, value and CRLF.
+Prepending a second `Cookie: msts=` and appending a second CRLF produces a
+Connection Request no server can read. MS-RDPBCGR 3.2.5.3.1 says only that
+the client "sends the routing token", which is why this was readable either
+way until a server actually sent one.
 
-* MS-CSSP 2.2.1 omits version 5 from the `errorCode` rule ("if the negotiated
-  version is 3, 4, or 6"), which is almost certainly a typo. We honour a present
-  `errorCode` at any version, so nothing depends on it.
-* MS-CSSP 3.1.5 step 4 says `negoTokens` is omitted from message 4. That cannot
-  hold when SPNEGO is the mechanism: the acceptor still owes an
-  `accept-completed` carrying its `mechListMIC` and there is nowhere else to put
-  it. We consume a `negoTokens` there only for SPNEGO, and the deviation is
-  commented at the site.
-* MS-RDPEDYC gives `DYNVC_CAPABILITIES` and `DYNVC_CREATE` the same command
-  value for both request and response. Only the direction tells them apart, and
-  a version 1 capabilities request is byte for byte a response.
-* MS-RDPBCGR 3.1.9's first scanline rule in interleaved RLE is per order, not
-  per pixel: an order starting on row zero uses first line semantics for its
-  whole length even when it runs into row one, and the check also clears
-  `insert_fg`. An implementation that evaluates it per pixel produces different
-  pixels from Windows.
-* Neither document says how to tell a Share Control PDU from a security header
-  when a server sends no licensing PDU at all, which is legal. The discriminator
-  in `rdp-core/src/connection/activate.rs` is derived from the specification:
-  a Share Control PDU's `totalLength` covers the whole payload and its `pduType`
-  carries `TS_PROTOCOL_VERSION` in the high bits, where a security header has
-  `flagsHi`, reserved at zero by MS-RDPBCGR 2.2.8.1.1.2.1.
+**How we know.** gnome-remote-desktop's handover cookie is 24 bytes and ends
+in CRLF, so the first reconnection after §1.12 died in our own encoder with
+"routing token contains its own terminator". FreeRDP settles the reading:
+`nego_send_negotiation_request` writes `RoutingToken` verbatim and appends a
+CRLF only when one is not already there.
+
+`encode` now decides by looking at the bytes, so both shapes work: a bare
+token still gets the prefix and the terminator, and a complete field is
+written through untouched. `check` still refuses a CRLF anywhere other than
+the end, which is the case that would split the field on the wire.
+
+### 1.14 OPEN: gnome-remote-desktop finishes its handover with RDSTLS
+
+`crates/rdp-core/src/connection/negotiate.rs`, `REQUESTED_PROTOCOLS`.
+
+**What was believed.** Briefly, and wrongly, that
+`LB_PASSWORD_IS_PK_ENCRYPTED` without `LB_TARGET_CERTIFICATE` would mean the
+handover password is a plain UTF-16 string. gnome-remote-desktop sends both,
+so the guess never applied and was backed out.
+
+**What is true.** The redirection is a complete RDSTLS authentication input
+and nothing else will do. The observed packet:
+
+```
+redir_options=0x00004000 session_id=0
+target_net_address=false target_fqdn=false target_netbios_name=false
+load_balance_info=25 username=true domain=false
+password=34 password_is_pk_encrypted=true
+redirection_guid=true target_certificate=true
+```
+
+`RedirectionGuid`, `UserName`, `Domain` and a `Password` encrypted under the
+public key of `TargetCertificate` are exactly the fields of an RDSTLS
+Authentication Request PDU (MS-RDPBCGR 2.2.17.1). A client never decrypts
+that password; it forwards the blob over the TLS channel and the target
+decrypts it with the private half. NLA has nowhere to put it, which is why
+our reconnection falls back to prompting and the user's own password is
+rejected by a daemon that was never told it.
+
+**How we know.** The daemon says so to the user: "This Remote Desktop
+connection is insecure. To secure this connection, enable RDSTLS Security in
+your client". `negotiate.rs` is equally clear in the other direction, listing
+`RDSTLS` and `RDSAAD` among the protocols "we did not" implement, and
+`REQUESTED_PROTOCOLS` offers only `SSL | HYBRID`.
+
+The work is a protocol, not a flag: request `PROTOCOL_RDSTLS` on the
+redirected attempt only, run a plain TLS handshake instead of CredSSP, and
+exchange the three PDUs of MS-RDPBCGR 2.2.17 over it. `Redirection` would
+also have to keep the redirection GUID and the encrypted password blob, both
+of which it currently drops.
+
+Sections 1.12 and 1.13 are settled and shipped; this is what is left.
