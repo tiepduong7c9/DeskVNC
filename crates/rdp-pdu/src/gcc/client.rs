@@ -70,7 +70,9 @@ pub mod early_capability_flags {
     pub const SUPPORT_MONITOR_LAYOUT_PDU: u16 = 0x0040;
     /// We answer network characteristics detection (2.2.14).
     pub const SUPPORT_NETCHAR_AUTODETECT: u16 = 0x0080;
-    /// EGFX, phase 2.
+    /// EGFX, phase 2. Not in [`DEFAULT`]: a caller opts in, because the
+    /// servers we have tested disagree about it
+    /// (`crates/rdp-core/src/connection/mcs.rs` explains which way).
     pub const SUPPORT_DYNVC_GFX_PROTOCOL: u16 = 0x0100;
     /// We fill the dynamic daylight saving time key name.
     pub const SUPPORT_DYNAMIC_TIME_ZONE: u16 = 0x0200;
@@ -78,6 +80,17 @@ pub mod early_capability_flags {
     pub const SUPPORT_HEARTBEAT_PDU: u16 = 0x0400;
     /// Lets the server skip the Channel Join round trips (PRDRDP/03 §2.5).
     pub const SUPPORT_SKIP_CHANNELJOIN: u16 = 0x0800;
+    /// What this client advertises unless a caller asks for more: every
+    /// capability we actually implement, and nothing that is still a
+    /// diagnostic.
+    pub const DEFAULT: u16 = SUPPORT_ERRINFO_PDU
+        | WANT_32BPP_SESSION
+        | SUPPORT_STATUSINFO_PDU
+        | VALID_CONNECTION_TYPE
+        | SUPPORT_MONITOR_LAYOUT_PDU
+        | SUPPORT_NETCHAR_AUTODETECT
+        | SUPPORT_DYNAMIC_TIME_ZONE
+        | SUPPORT_HEARTBEAT_PDU;
 }
 
 /// `TS_UD_CS_CORE.connectionType` (MS-RDPBCGR 2.2.1.3.2).
@@ -225,16 +238,7 @@ impl Default for ClientCoreData {
                     | color_depth_support::BPP15
                     | color_depth_support::BPP32,
             ),
-            early_capability_flags: Some(
-                early_capability_flags::SUPPORT_ERRINFO_PDU
-                    | early_capability_flags::WANT_32BPP_SESSION
-                    | early_capability_flags::SUPPORT_STATUSINFO_PDU
-                    | early_capability_flags::VALID_CONNECTION_TYPE
-                    | early_capability_flags::SUPPORT_MONITOR_LAYOUT_PDU
-                    | early_capability_flags::SUPPORT_NETCHAR_AUTODETECT
-                    | early_capability_flags::SUPPORT_DYNAMIC_TIME_ZONE
-                    | early_capability_flags::SUPPORT_HEARTBEAT_PDU,
-            ),
+            early_capability_flags: Some(early_capability_flags::DEFAULT),
             client_dig_product_id: Some(String::new()),
             connection_type: Some(connection_type::LAN),
             pad1octet: Some(0),

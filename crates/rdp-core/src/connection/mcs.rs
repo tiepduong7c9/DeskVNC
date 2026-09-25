@@ -17,7 +17,8 @@
 //! copy.
 
 use rdp_pdu::gcc::client::{
-    ChannelDef, ClientCoreData, ClientMessageChannelData, ClientNetworkData, ClientSecurityData,
+    early_capability_flags, ChannelDef, ClientCoreData, ClientMessageChannelData,
+    ClientNetworkData, ClientSecurityData,
 };
 use rdp_pdu::gcc::server::ServerGccBlocks;
 use rdp_pdu::io::{Decode, Encode, Writer};
@@ -105,6 +106,55 @@ pub struct McsConnected {
     pub skipped_channel_joins: bool,
 }
 
+/// The environment variable that turns the graphics pipeline advertisement on.
+pub const GFX_ENV: &str = "DESKVNC_RDP_GRAPHICS_PIPELINE";
+
+/// `earlyCapabilityFlags` for the Client Core Data, and why the graphics
+/// pipeline bit is not in the default set.
+///
+/// The two servers we have tested disagree about
+/// `RNS_UD_CS_SUPPORT_DYNVC_GFX_PROTOCOL` as flatly as two servers can.
+/// gnome-remote-desktop refuses a client that leaves it clear, closing the
+/// connection with "Client did not advertise support for the Graphics
+/// Pipeline". Windows does the opposite: it accepts the bit, opens the
+/// channel, and then ends the session with
+/// `ERRINFO_GRAPHICSSUBSYSTEMFAILED` once we answer with an
+/// `RDPGFX_CAPS_ADVERTISE`. Setting it by default traded a working Windows
+/// session for a GNOME one, so until the Windows side is understood it is a
+/// switch rather than a default and neither host can break the other
+/// (`docs/RDP_SPEC_NOTES.md` §1.11).
+fn early_capabilities() -> Option<u16> {
+    let graphics = graphics_pipeline_requested();
+    if graphics {
+        tracing::info!(
+            "advertising the graphics pipeline because {GFX_ENV} is set: this is a diagnostic \
+             switch and is known to end a Windows session with \
+             ERRINFO_GRAPHICSSUBSYSTEMFAILED"
+        );
+    }
+    early_capabilities_with(graphics)
+}
+
+/// The decision itself, with the environment already read.
+///
+/// Split out because the environment is process wide and the tests run in
+/// parallel: a test that set the variable would decide what an unrelated test
+/// advertised. Same shape as `select_protocol` and `autodetect_step`.
+const fn early_capabilities_with(graphics: bool) -> Option<u16> {
+    if graphics {
+        Some(early_capability_flags::DEFAULT | early_capability_flags::SUPPORT_DYNVC_GFX_PROTOCOL)
+    } else {
+        Some(early_capability_flags::DEFAULT)
+    }
+}
+
+/// True when the switch is set to `1`. Anything else, including unset and
+/// including `true`, leaves the advertisement off: a diagnostic that turns
+/// itself on by accident is worse than one nobody can find.
+fn graphics_pipeline_requested() -> bool {
+    matches!(std::env::var(GFX_ENV).as_deref(), Ok("1"))
+}
+
 /// Build the `TS_UD_CS_*` blocks we send in the Connect Initial
 /// (MS-RDPBCGR 2.2.1.3, PRDRDP/03 §2.4).
 ///
@@ -141,6 +191,7 @@ pub fn client_blocks(opts: &ResolvedOptions, selected: SecurityProtocol) -> Clie
             desktop_orientation: Some(0),
             desktop_scale_factor: Some(opts.scale_factor),
             device_scale_factor: Some(device_scale_factor(opts.scale_factor)),
+            early_capability_flags: early_capabilities(),
             ..ClientCoreData::default()
         }),
         // Both words zero is the correct "I am using TLS or CredSSP" signal
@@ -616,6 +667,31 @@ mod tests {
             message_channel: Some(ServerMessageChannelData { channel_id: 1005 }),
             multitransport: None,
         }
+    }
+
+    /// Advertising the graphics pipeline by default cost a working Windows
+    /// session once already: the host accepted the bit, opened the channel
+    /// and then ended the session with `ERRINFO_GRAPHICSSUBSYSTEMFAILED`.
+    /// The bit stays out of the default set until that is understood.
+    #[test]
+    fn the_graphics_pipeline_is_not_advertised_unless_it_is_asked_for() {
+        let off = early_capabilities_with(false).expect("flags");
+        assert_eq!(
+            off & early_capability_flags::SUPPORT_DYNVC_GFX_PROTOCOL,
+            0,
+            "the default advertisement must leave the graphics pipeline clear"
+        );
+
+        let on = early_capabilities_with(true).expect("flags");
+        assert_eq!(
+            on & early_capability_flags::SUPPORT_DYNVC_GFX_PROTOCOL,
+            early_capability_flags::SUPPORT_DYNVC_GFX_PROTOCOL
+        );
+        assert_eq!(
+            on & off,
+            off,
+            "asking for the graphics pipeline adds a bit and removes none"
+        );
     }
 
     /// The `serverSelectedProtocol` field is the client's assertion of what
