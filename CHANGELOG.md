@@ -10,6 +10,13 @@ to stored data and to the IPC contract between the Rust core and the frontend.
 
 ## [Unreleased]
 
+### Changed
+
+- About now says who maintains this build. psmux remains credited as the
+  author of DeskVNCViewer with a link to their GitHub; two new rows name this
+  as a fork and send bug reports to its own tracker, rather than to an
+  upstream project that never wrote the code in it.
+
 ## [0.28.0] - 2026-09-25
 
 This is a fork release. It is not an upstream version and the tag exists only

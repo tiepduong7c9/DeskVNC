@@ -4,9 +4,20 @@ import { Dialog } from "../components/primitives";
 import { openExternal, safeInvoke, writeClipboard } from "../lib/tauri";
 import { classNames, fullscreenHint, modKeyLabel } from "../lib/util";
 
+/** The original author of DeskVNCViewer. This fork is built on their work. */
 export const AUTHOR_NAME = "psmux";
 export const CONTACT_URL = "https://github.com/psmux";
 export const PROJECT_URL = "https://github.com/psmux/DeskVNC";
+
+/**
+ * Who maintains *this* build, and where its releases come from.
+ *
+ * A fork that ships its own tags has to name itself here. Without it every
+ * bug report from a fork build lands on the upstream tracker, against code
+ * upstream never wrote and cannot reproduce.
+ */
+export const FORK_MAINTAINER = "Tiep Duong";
+export const FORK_URL = "https://github.com/tiepduong7c9/DeskVNC";
 
 type Tab = "About" | "Help";
 
@@ -57,6 +68,7 @@ export function buildReport(i: AboutInfo): string {
   return [
     "```",
     `DeskVNCViewer ${i.appVersion} (${i.gitDescribe})`,
+    `Source:  ${FORK_URL}`,
     `Commit:  ${i.gitHash}`,
     `         branch ${i.gitBranch}, committed ${i.gitCommitDate}${dirty}`,
     `Build:   ${i.buildProfile} profile, tauri ${i.tauriVersion}, ${i.rustcVersion}`,
@@ -208,11 +220,7 @@ export function About({ onClose }: { onClose: () => void }): ReactNode {
 
           <dl className="space-y-2 rounded-md bg-inset/50 p-3 text-sm">
             <div className="flex gap-2">
-              <dt className="w-24 shrink-0 text-tertiary">Developed by</dt>
-              <dd className="text-primary">{AUTHOR_NAME}</dd>
-            </div>
-            <div className="flex gap-2">
-              <dt className="w-24 shrink-0 text-tertiary">Contact</dt>
+              <dt className="w-24 shrink-0 text-tertiary">Created by</dt>
               <dd>
                 <button
                   type="button"
@@ -224,15 +232,34 @@ export function About({ onClose }: { onClose: () => void }): ReactNode {
               </dd>
             </div>
             <div className="flex gap-2">
+              <dt className="w-24 shrink-0 text-tertiary">This build</dt>
+              <dd className="text-primary">
+                A fork maintained by {FORK_MAINTAINER}
+              </dd>
+            </div>
+            <div className="flex gap-2">
+              <dt className="w-24 shrink-0 text-tertiary">Report a bug</dt>
+              <dd>
+                <button
+                  type="button"
+                  className="text-accent hover:underline"
+                  onClick={() => void openExternal(`${FORK_URL}/issues`)}
+                >
+                  {FORK_URL.replace("https://github.com/", "")}
+                </button>
+              </dd>
+            </div>
+            <div className="flex gap-2">
               <dt className="w-24 shrink-0 text-tertiary">License</dt>
               <dd className="text-primary">MIT OR Apache-2.0</dd>
             </div>
           </dl>
 
           <p className="text-xs text-tertiary">
-            © {new Date().getFullYear()} {AUTHOR_NAME}. Supports RFB 3.3-3.8 with
-            VNC, VeNCrypt, RA2, Apple Diffie-Hellman and MS-Logon authentication,
-            and RDP with network level authentication.
+            © {new Date().getFullYear()} {AUTHOR_NAME} and contributors. Supports
+            RFB 3.3-3.8 with VNC, VeNCrypt, RA2, Apple Diffie-Hellman and MS-Logon
+            authentication, RDP with network level authentication and RDSTLS, and
+            SSH.
           </p>
 
           <div className="flex gap-2 pt-1">
@@ -241,14 +268,14 @@ export function About({ onClose }: { onClose: () => void }): ReactNode {
               className="btn-secondary"
               onClick={() => void openExternal(PROJECT_URL)}
             >
-              Project page
+              Upstream project
             </button>
             <button
               type="button"
               className="btn-secondary"
-              onClick={() => void openExternal(CONTACT_URL)}
+              onClick={() => void openExternal(FORK_URL)}
             >
-              Contact developer
+              This fork
             </button>
             <button type="button" className="btn-primary ml-auto" data-autofocus onClick={onClose}>
               Close
