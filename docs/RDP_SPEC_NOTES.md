@@ -546,3 +546,50 @@ them:
 `RDSTLS_DATA_CAPABILITIES`, `RDSTLS_DATA_PASSWORD_CREDS` and
 `RDSTLS_DATA_RESULT_CODE` are all 0x0001: the field distinguishes bodies
 within a `PduType`, not across them.
+
+### 1.15 SETTLED: `RDP_SEGMENTED_DATA` frames the server to client direction only
+
+`crates/rdp-core/src/channels/dvc.rs`, `DvcMux::flush`.
+
+**What was believed.** That every EGFX message rides in an
+`RDP_SEGMENTED_DATA` envelope (MS-RDPEGFX 2.2.5.1) whichever way it is
+going, with a client's marked literal: descriptor `SINGLE`, then a flags
+byte of `PACKET_COMPR_TYPE_RDP8` with `PACKET_COMPRESSED` clear.
+
+**What is true.** That envelope frames the server to client graphics stream
+and only that direction. A client sends its capability advertisement, its
+cache import offer and its frame acknowledgements as bare `RDPGFX_HEADER`
+PDUs. A server that receives one with the envelope on it reads the segment
+descriptor as the command id and the two bytes after it as `flags`, which
+puts `pduLength` two bytes off the end of where it belongs.
+
+**How we know.** The arithmetic, from gnome-remote-desktop's journal:
+
+```
+[rdpgfx_read_header] invalid length, got 28, require at least 2228216
+```
+
+Our advertisement went out as `E0 04 | 12 00 | 00 00 | 22 00 00 00 ...`,
+36 bytes. Read from offset zero that is cmdId 0x04E0, flags 0x0012 and
+`pduLength` 0x00220000, which is 2228224; FreeRDP then wants
+`pduLength - 8` more bytes, which is 2228216 exactly, and has 36 - 8 = 28,
+which is the other number in the line. Both match to the byte, so this is
+not an inference.
+
+Ten seconds later the server gave up:
+
+```
+[RDP.RDPGFX] Client did not respond to protocol initiation. Terminating session
+ERRINFO_BAD_CAPABILITIES (0x000010EA)
+```
+
+This is very likely the whole of the Windows half of section 1.11 as well.
+That host opened the graphics channel and ended the session with
+`ERRINFO_GRAPHICSSUBSYSTEMFAILED` on the same malformed advertisement, and
+no Windows host has been tried since the framing was corrected. Section 1.11
+should not be closed on that guess until one has been.
+
+The mock server in `crates/rdp-core/tests/common/` stripped the envelope,
+which is how a client that sent one passed every test in the tree and was
+refused by the first real server it met. It now refuses the envelope the way
+FreeRDP does.

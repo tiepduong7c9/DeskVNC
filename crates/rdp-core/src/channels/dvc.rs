@@ -30,9 +30,7 @@
 //! asks for it is 2.5 MB spent on nothing. It is refused with a typed error
 //! naming the phase rather than with a `todo!()`.
 
-use rdp_pdu::codes::CompressionType;
 use rdp_pdu::vc::dvc::{creation_status, dvc_version, DvcPdu, DvcReassembler};
-use rdp_pdu::vc::segment::Segmented;
 use rdp_pdu::vc::static_vc::CHANNEL_CHUNK_LENGTH;
 use rdp_pdu::{Decode, Encode, Payload, Reader, Writer};
 
@@ -198,19 +196,6 @@ enum DynKind {
     Audio(Box<Rdpsnd>),
 }
 
-impl DynKind {
-    /// Whether this channel's messages ride inside an `RDP_SEGMENTED_DATA`
-    /// envelope.
-    ///
-    /// The graphics channel's do (MS-RDPEGFX 2.2.5.1) and nothing else's
-    /// does: the segmentation layer is defined by MS-RDPEGFX and is not part
-    /// of MS-RDPEDYC, so a display control PDU wrapped in one would be read
-    /// by the server as a malformed header.
-    const fn segmented(&self) -> bool {
-        matches!(self, DynKind::Egfx(_))
-    }
-}
-
 /// The dynamic channel multiplexer.
 #[derive(Debug, Default)]
 pub struct DvcMux {
@@ -283,7 +268,7 @@ impl DvcMux {
         if replies.is_empty() {
             return Ok(());
         }
-        self.flush(channel_id, false, static_id, ctx, out)
+        self.flush(channel_id, static_id, ctx, out)
     }
 
     /// The window changed size: ask the server to resize the desktop
@@ -323,7 +308,7 @@ impl DvcMux {
             unreachable!("the index came from a matches! on this variant");
         };
         display.resize(width, height, scale_percent, replies)?;
-        self.flush(channel_id, false, static_id, ctx, out)
+        self.flush(channel_id, static_id, ctx, out)
     }
 
     /// One complete drdynvc message.
@@ -534,7 +519,7 @@ impl DvcMux {
             kind: DynKind::Egfx(egfx),
             reassembler: DvcReassembler::with_cap(EGFX_REASSEMBLY_CAP),
         });
-        self.flush(channel_id, true, static_id, ctx, out)
+        self.flush(channel_id, static_id, ctx, out)
     }
 
     /// A Data or Data First fragment (MS-RDPEDYC 2.2.3.1, 2.2.3.2).
@@ -596,27 +581,31 @@ impl DvcMux {
         let Some(message) = complete else {
             return Ok(());
         };
-        let segmented = kind.segmented();
         match kind {
             DynKind::Egfx(egfx) => egfx.message(message, ctx, &mut out.events, replies)?,
             DynKind::Display(display) => display.message(message, replies)?,
             #[cfg(feature = "audio")]
             DynKind::Audio(audio) => audio.message(message, &mut out.events, replies)?,
         }
-        self.flush(channel_id, segmented, static_id, ctx, out)
+        self.flush(channel_id, static_id, ctx, out)
     }
 
-    /// Wrap and queue everything the handler produced.
+    /// Queue everything the handler produced.
     ///
-    /// An EGFX reply gets its own `RDP_SEGMENTED_DATA` envelope
-    /// (MS-RDPEGFX 2.2.5.1); every other channel's rides in `DYNVC_DATA` on
-    /// its own, because the segmentation layer is MS-RDPEGFX's and not
-    /// MS-RDPEDYC's. Either way it gets its own drdynvc fragmentation and
-    /// every buffer goes straight back to the pool.
+    /// # Why nothing is wrapped, the graphics channel included
+    ///
+    /// `RDP_SEGMENTED_DATA` (MS-RDPEGFX 2.2.5.1) frames the server to client
+    /// graphics stream and only that direction. A client sends its
+    /// capability advertisement, its cache offer and its frame
+    /// acknowledgements as bare PDUs, and a server reading one that carries
+    /// the envelope takes the segment descriptor for the command id
+    /// (`docs/RDP_SPEC_NOTES.md` §1.15).
+    ///
+    /// Every message still gets its own drdynvc fragmentation and every
+    /// buffer goes straight back to the pool.
     fn flush(
         &mut self,
         channel_id: u32,
-        segmented: bool,
         static_id: u16,
         ctx: ChannelCtx,
         out: &mut Outbox,
@@ -628,19 +617,7 @@ impl DvcMux {
         let result = (|| -> Result<()> {
             for payload in &ready {
                 self.wire.clear();
-                if segmented {
-                    // A client to server EGFX message is never compressed:
-                    // the flags byte carries `PACKET_COMPR_TYPE_RDP8` with
-                    // `PACKET_COMPRESSED` clear, which is the literal form
-                    // (MS-RDPEGFX 2.2.5.1, MS-RDPBCGR 3.1.8.4.2).
-                    Segmented::Literal {
-                        flags: CompressionType::Rdp8.to_u8(),
-                        data: Payload::new(payload),
-                    }
-                    .encode_checked(&mut Writer::new(&mut self.wire))?;
-                } else {
-                    self.wire.extend_from_slice(payload);
-                }
+                self.wire.extend_from_slice(payload);
                 self.fragment(channel_id, static_id, ctx, out)?;
             }
             Ok(())
@@ -825,8 +802,15 @@ mod tests {
             .collect()
     }
 
-    /// The EGFX payloads the multiplexer wrapped, with their envelope and
-    /// drdynvc header stripped.
+    /// The EGFX payloads the multiplexer queued, with their drdynvc header
+    /// stripped and nothing else taken off.
+    ///
+    /// The assertion is the regression. A client to server EGFX PDU is a
+    /// bare `RDPGFX_HEADER`: `RDP_SEGMENTED_DATA` (MS-RDPEGFX 2.2.5.1) frames
+    /// the server to client stream and only that direction. Wrapping ours
+    /// made gnome-remote-desktop read the segment descriptor as the command
+    /// id and then ask for a two megabyte PDU
+    /// (`docs/RDP_SPEC_NOTES.md` §1.15).
     fn egfx_payloads(out: &Outbox) -> Vec<Vec<u8>> {
         out.frames
             .iter()
@@ -834,11 +818,13 @@ mod tests {
                 let body = unwrap_channel_frame(frame);
                 match DvcPdu::decode(&mut Reader::new(&body)).ok()? {
                     DvcPdu::Data { data, .. } => {
-                        // Descriptor `SINGLE` then the RDP 8.0 flags byte.
                         let bytes = data.as_slice();
-                        assert_eq!(bytes.first(), Some(&0xE0), "descriptor SINGLE");
-                        assert_eq!(bytes.get(1), Some(&0x04), "RDP8, not compressed");
-                        Some(bytes[2..].to_vec())
+                        assert_ne!(
+                            bytes.first(),
+                            Some(&rdp_pdu::vc::segment::descriptor::SINGLE),
+                            "a client to server EGFX PDU carries no segment envelope"
+                        );
+                        Some(bytes.to_vec())
                     }
                     _ => None,
                 }
@@ -872,6 +858,61 @@ mod tests {
         )
         .expect("create");
         (mux, 7)
+    }
+
+    /// The first bytes a server sees on the graphics channel are the
+    /// `RDPGFX_HEADER` of the capability advertisement (MS-RDPEGFX 2.2.1.5,
+    /// 2.2.2.18), and nothing in front of it.
+    ///
+    /// gnome-remote-desktop read a wrapped advertisement as command id
+    /// 0x04E0 with a `pduLength` of 0x00220000, asked for two megabytes that
+    /// were never coming, and ended the session ten seconds later with
+    /// ERRINFO_BAD_CAPABILITIES (`docs/RDP_SPEC_NOTES.md` §1.15).
+    #[test]
+    fn the_capability_advertisement_reaches_the_wire_as_a_bare_rdpgfx_header() {
+        let mut mux = DvcMux::new();
+        let mut out = Outbox::new();
+        mux.message(
+            &from_server(&DvcPdu::Capabilities {
+                version: dvc_version::V3,
+                priority_charges: None,
+            }),
+            STATIC_ID,
+            ctx(),
+            &mut out,
+        )
+        .expect("capabilities");
+
+        let mut out = Outbox::new();
+        mux.message(
+            &from_server(&DvcPdu::CreateRequest {
+                channel_id: 7,
+                channel_name: EGFX_CHANNEL_NAME.to_owned(),
+            }),
+            STATIC_ID,
+            ctx(),
+            &mut out,
+        )
+        .expect("create");
+
+        let payloads = egfx_payloads(&out);
+        let [advertise] = payloads.as_slice() else {
+            panic!("expected exactly one EGFX payload, got {}", payloads.len());
+        };
+        // `RDPGFX_CMDID_CAPSADVERTISE`, little endian, at offset zero.
+        assert_eq!(
+            &advertise[..2],
+            &0x0012u16.to_le_bytes(),
+            "the frame opens on the command id"
+        );
+        // `flags`, then a `pduLength` that counts the header it sits in.
+        assert_eq!(&advertise[2..4], &[0, 0], "flags");
+        let declared = u32::from_le_bytes(advertise[4..8].try_into().expect("four bytes"));
+        assert_eq!(
+            declared as usize,
+            advertise.len(),
+            "pduLength counts the whole PDU, header included"
+        );
     }
 
     /// One EGFX message inside an uncompressed `RDP_SEGMENTED_DATA` envelope.

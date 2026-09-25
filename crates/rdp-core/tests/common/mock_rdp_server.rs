@@ -64,7 +64,6 @@ use rdp_pdu::update::slowpath::GraphicsUpdate;
 use rdp_pdu::update::{BitmapData, BitmapUpdate, RectExclusive, RectInclusive};
 use rdp_pdu::vc::dvc::{cmd as dvc_cmd, dvc_version, read_channel_id, DvcHeader, DvcPdu};
 use rdp_pdu::vc::egfx::{caps_version, codec_id, pixel_format, Capset, EgfxPdu};
-use rdp_pdu::vc::segment::Segmented;
 use rdp_pdu::vc::static_vc::{channel_flags, ChannelPduHeader};
 use rdp_pdu::x224::{
     self, security_protocol, NegotiationFailure, NegotiationResponse, X224ConnectionConfirm,
@@ -1365,17 +1364,19 @@ impl ChannelScript {
         stream: &mut TcpStream,
         recorded: &Arc<Mutex<Recorded>>,
     ) -> std::io::Result<()> {
-        // The client sends the literal form, so the mock reads the envelope
-        // rather than decompressing: there is no ZGFX compressor in the tree
-        // and a client to server message is never compressed.
-        let segmented =
-            Segmented::decode(&mut Reader::new(message)).map_err(std::io::Error::other)?;
-        let Segmented::Literal { data, .. } = segmented else {
+        // A client to server EGFX message carries no `RDP_SEGMENTED_DATA`
+        // envelope: that framing is the server to client stream's, and
+        // FreeRDP's `rdpgfx_server_receive_pdu` reads straight into
+        // `RDPGFX_HEADER` (`docs/RDP_SPEC_NOTES.md` §1.15). This mock used to
+        // strip an envelope, which is how a client that sent one passed every
+        // test here and was refused by the first real server it met.
+        if message.first() == Some(&rdp_pdu::vc::segment::descriptor::SINGLE) {
             return Err(std::io::Error::other(
-                "the client compressed an EGFX message, which it never should",
+                "the client wrapped an EGFX message in a segment envelope, which a server \
+                 reads as a command id",
             ));
-        };
-        for item in EgfxPdu::iter(data.as_slice()) {
+        }
+        for item in EgfxPdu::iter(message) {
             match item.map_err(std::io::Error::other)? {
                 EgfxPdu::CapsAdvertise { capsets } => {
                     recorded.lock().expect("not poisoned").egfx_advertised =
