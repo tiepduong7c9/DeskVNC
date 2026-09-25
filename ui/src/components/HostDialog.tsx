@@ -31,7 +31,9 @@ import type { MultiplexerKind, SshAuthKind, SshSettings } from "../lib/ssh";
 import { blankSshSettings, parseSshSettings } from "../lib/ssh";
 import { sshDefaults } from "../lib/sshDefaults";
 import type { LocalKeys } from "../lib/tauri";
-import { pickPrivateKeyFile, sshListLocalKeys, sshListWslDistros } from "../lib/tauri";
+import { pickImageFile, pickPrivateKeyFile, sshListLocalKeys, sshListWslDistros } from "../lib/tauri";
+import { BUILTIN_ICON_PREFIX, FILE_ICON_TAG, previewHostIcon } from "../lib/hostIcon";
+import { useBuiltinHostIcons, useHostIcon } from "../hooks/useHostIcon";
 import { MOCK_LOCAL_KEYS, useMockData } from "../lib/mock";
 import { portOnProtocolChange, portWasTouched } from "../lib/hostDraft";
 import { parseConnectTarget } from "../lib/address";
@@ -104,12 +106,32 @@ export interface HostDraft {
    * must not move it. Never persisted.
    */
   portTouched?: boolean;
+
+  /** This host's icon: `null`, `"builtin:<key>"` or `"file"`. */
+  icon: string | null;
+
+  /**
+   * UI-only: a picture just chosen in the picker, as a path on this computer.
+   *
+   * Non-null only between choosing a file and saving, and it is the save that
+   * writes it (`importHostIcon`). Nothing touches the stored icon before
+   * then, which is what makes Cancel mean cancel: a host that already had an
+   * icon keeps it, and a host that had none still has none.
+   *
+   * Null with `icon === "file"` is the ordinary state of a saved host whose
+   * icon nobody has changed this time round: keep the file that is there.
+   */
+  iconFile?: string | null;
+
+  /** UI-only: blob URL of {@link iconFile}, so the picker can show it. */
+  iconPreview?: string | null;
 }
 
 export function draftFromHost(h: HostProfile | null, prefill?: Partial<HostDraft>): HostDraft {
   const protocol: ProtocolKind = h ? hostProtocol(h) : (prefill?.protocol ?? "vnc");
   return {
     id: h?.id,
+    icon: h?.icon ?? null,
     friendlyName: h?.friendlyName ?? prefill?.friendlyName ?? "",
     protocol,
     address: h?.address ?? prefill?.address ?? "",
@@ -319,6 +341,8 @@ export function HostDialog({
             onChange={(e) => set({ friendlyName: e.target.value })}
           />
         </Field>
+
+        <IconPicker draft={d} set={set} />
 
         {/*
           Above the address row, because it changes what the rest of the form
@@ -1630,6 +1654,126 @@ function ResolutionField({
           {dim(value.height, (height) => onChange({ ...value, height }), "Height in pixels")}
         </div>
       ) : null}
+    </Field>
+  );
+}
+
+/**
+ * Pick the picture this host wears: nothing, one of the bundled colours, or a
+ * file of your own.
+ *
+ * Where the choice shows up is not uniform, and the hint says so rather than
+ * promising a dock icon the platform will not draw. Windows puts it on the
+ * taskbar button, X11 desktops on the window, and Wayland and macOS ignore
+ * per-window icons entirely (see `src-tauri/src/hosticon.rs`). The library
+ * tile is the one place all four agree, which is why it is named first.
+ */
+function IconPicker({
+  draft,
+  set,
+}: {
+  draft: HostDraft;
+  set: (patch: Partial<HostDraft>) => void;
+}): ReactNode {
+  const builtins = useBuiltinHostIcons();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // Resolved for the whole draft, then narrowed: `useHostIcon` answers for a
+  // bundled icon too, and showing that on the file button would claim a
+  // picture had been chosen when none had. A pending choice wins over the
+  // stored one, so the button shows what saving would actually keep.
+  const resolved = useHostIcon(draft.id ?? "", draft.icon);
+  const filePreview =
+    draft.icon === FILE_ICON_TAG ? (draft.iconPreview ?? resolved) : null;
+
+  const chooseFile = async (): Promise<void> => {
+    const path = await pickImageFile();
+    if (!path) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const url = await previewHostIcon(path);
+      if (!url) {
+        setError("That file could not be read as an image.");
+        return;
+      }
+      if (draft.iconPreview) URL.revokeObjectURL(draft.iconPreview);
+      set({ icon: FILE_ICON_TAG, iconFile: path, iconPreview: url });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const choose = (icon: string | null): void => {
+    setError(null);
+    // The pending file goes with the choice, but nothing on disk is touched:
+    // the save is what writes an icon and what clears one.
+    if (draft.iconPreview) URL.revokeObjectURL(draft.iconPreview);
+    set({ icon, iconFile: null, iconPreview: null });
+  };
+
+  const swatch = "size-8 rounded-md border transition";
+  const selected = "border-accent ring-2 ring-accent/40";
+  const unselected = "border-subtle hover:border-strong";
+
+  return (
+    <Field
+      label="Icon"
+      hint="Shown on this host's tile, and on its own window where the system draws one"
+      error={error}
+    >
+      <div className="flex flex-wrap items-center gap-1.5" role="radiogroup" aria-label="Host icon">
+        <button
+          type="button"
+          role="radio"
+          aria-checked={draft.icon === null}
+          aria-label="No icon"
+          title="No icon"
+          className={classNames(
+            swatch,
+            "flex items-center justify-center text-xs text-tertiary",
+            draft.icon === null ? selected : unselected,
+          )}
+          onClick={() => choose(null)}
+        >
+          {/* A diagonal, the usual "none" mark, and legible at this size. */}
+          <span aria-hidden="true">/</span>
+        </button>
+
+        {builtins.map((b) => {
+          const value = `${BUILTIN_ICON_PREFIX}${b.key}`;
+          return (
+            <button
+              key={b.key}
+              type="button"
+              role="radio"
+              aria-checked={draft.icon === value}
+              aria-label={b.label}
+              title={b.label}
+              className={classNames(swatch, draft.icon === value ? selected : unselected)}
+              onClick={() => choose(value)}
+            >
+              <img src={b.dataUrl} alt="" className="size-full rounded-[5px]" />
+            </button>
+          );
+        })}
+
+        <button
+          type="button"
+          role="radio"
+          aria-checked={draft.icon === FILE_ICON_TAG}
+          className={classNames(
+            "ml-1 flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs",
+            draft.icon === FILE_ICON_TAG ? selected : unselected,
+            busy && "opacity-60",
+          )}
+          disabled={busy}
+          onClick={() => void chooseFile()}
+        >
+          {filePreview ? <img src={filePreview} alt="" className="size-5 rounded-sm" /> : null}
+          {busy ? "Reading…" : filePreview ? "Change…" : "Choose a picture…"}
+        </button>
+      </div>
     </Field>
   );
 }

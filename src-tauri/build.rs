@@ -119,6 +119,15 @@ fn main() {
             "remove_tag_from_hosts",
             "list_history",
             "get_thumbnail",
+            // per-host window/tile icons. `preview_host_icon` reads a path the
+            // user chose in the native picker and writes nothing;
+            // `import_host_icon` is the one that stores, and is a separate
+            // grant for that reason.
+            "builtin_host_icons",
+            "preview_host_icon",
+            "import_host_icon",
+            "get_host_icon",
+            "clear_host_icon",
             "get_app_setting",
             "set_app_setting",
             // build/system fingerprint for the About dialog and bug reports

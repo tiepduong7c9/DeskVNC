@@ -8,6 +8,7 @@
 mod agent;
 mod commands;
 mod framing;
+mod hosticon;
 mod menu;
 mod state;
 mod thumbnail;
@@ -190,6 +191,11 @@ pub fn run() {
             commands::hosts::remove_tag_from_hosts,
             commands::hosts::list_history,
             commands::hosts::get_thumbnail,
+            commands::hosts::builtin_host_icons,
+            commands::hosts::preview_host_icon,
+            commands::hosts::import_host_icon,
+            commands::hosts::get_host_icon,
+            commands::hosts::clear_host_icon,
             commands::about::about_info,
             commands::hosts::get_app_setting,
             commands::hosts::set_app_setting,

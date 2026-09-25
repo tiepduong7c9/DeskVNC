@@ -90,6 +90,24 @@ pub struct HostProfile {
     /// predating this field would fail every save with "invalid args".
     #[serde(default)]
     pub ssh_settings: Option<String>,
+
+    /// This host's own icon, or `None` to use the application icon.
+    ///
+    /// Two forms, both short tags rather than image data:
+    ///
+    /// - `"builtin:<key>"` names one of the icons compiled into the shell
+    ///   (`src-tauri/icons/hosts/`), so it cannot go missing and needs no
+    ///   file on disk.
+    /// - `"file"` means the PNG the user chose, normalised and copied to
+    ///   `<data_dir>/host-icons/<id>.png`. The copy is the point: an icon that
+    ///   pointed at the original path would stop drawing the first time that
+    ///   file was moved, renamed or deleted.
+    ///
+    /// Unparsed here, like [`HostProfile::rdp_settings`]. A tag this build
+    /// does not recognise must leave the profile listable and editable, with
+    /// an icon that simply does not draw, rather than failing the load.
+    #[serde(default)]
+    pub icon: Option<String>,
 }
 
 impl HostProfile {
@@ -148,6 +166,7 @@ impl Default for HostProfile {
             protocol: vnc_protocol(),
             rdp_settings: None,
             ssh_settings: None,
+            icon: None,
         }
     }
 }

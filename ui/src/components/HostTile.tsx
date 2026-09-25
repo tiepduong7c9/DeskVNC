@@ -14,6 +14,7 @@ import { classNames, colorFromId, formatBps } from "../lib/util";
 import { useHosts } from "../state/HostsContext";
 import { useSessions, type TileActivity } from "../state/SessionsContext";
 import { IconKey, IconMonitor, IconZap, IconEdit, IconLock, IconAlert, IconPlus } from "./icons";
+import { useHostIcon } from "../hooks/useHostIcon";
 
 /**
  * The OS badge.
@@ -213,6 +214,30 @@ function LiveBadge(): ReactNode {
   );
 }
 
+/**
+ * The host's own icon, over the top-left of the preview.
+ *
+ * The tile is where this choice is *always* visible. Its real job is the
+ * dedicated session window, and two of the four platforms draw no per-window
+ * icon at all (`src-tauri/src/hosticon.rs`), so without this the setting
+ * would appear to do nothing on a Mac or a Wayland desktop.
+ *
+ * Mirrors `LiveBadge`'s corner treatment, on the opposite corner so a live
+ * session and an icon never overlap.
+ */
+function HostIconBadge({ hostId, icon }: { hostId: string; icon: string | null }): ReactNode {
+  const url = useHostIcon(hostId, icon);
+  if (!url) return null;
+  return (
+    <img
+      src={url}
+      alt=""
+      draggable={false}
+      className="pointer-events-none absolute left-1.5 top-1.5 size-6 rounded-md shadow-(--shadow-tile)"
+    />
+  );
+}
+
 /** The preview frame to show, or null (toggle off / none published yet). */
 function livePreviewOf(activity: TileActivity, enabled: boolean): string | null {
   return enabled && activity.preview ? activity.preview.dataUrl : null;
@@ -298,6 +323,7 @@ export function HostTile({
             <IconMonitor size={40} className="text-white/80" />
           </div>
         )}
+        <HostIconBadge hostId={host.id} icon={host.icon} />
         {preview ? <LiveBadge /> : null}
         {activity.bandwidth ? (
           // Yields to the hover quick actions below, which land in the same spot.

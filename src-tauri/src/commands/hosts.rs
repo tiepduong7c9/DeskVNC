@@ -164,6 +164,101 @@ pub async fn get_thumbnail(
     Ok(tauri::ipc::Response::new(bytes.unwrap_or_default()))
 }
 
+/// The bundled icon palette, ready to draw in the picker.
+///
+/// One call returns the whole set as data URLs rather than a file name per
+/// entry, because these images are compiled into the binary and have no path
+/// the webview could fetch. They total a few tens of kilobytes and the picker
+/// needs all of them at once, so a round trip each would buy nothing.
+#[tauri::command]
+pub fn builtin_host_icons() -> Vec<BuiltinHostIcon> {
+    use base64::Engine as _;
+    crate::hosticon::BUILTINS
+        .iter()
+        .map(|b| BuiltinHostIcon {
+            key: b.key,
+            label: b.label,
+            data_url: format!(
+                "data:image/png;base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(b.png)
+            ),
+        })
+        .collect()
+}
+
+/// One entry of [`builtin_host_icons`].
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuiltinHostIcon {
+    /// Stored in `hosts.icon` as `builtin:<key>`.
+    pub key: &'static str,
+    pub label: &'static str,
+    /// `data:image/png;base64,...`, safe in an `img` src under the app CSP
+    /// (`img-src` already allows `data:` for exactly this kind of thing).
+    pub data_url: String,
+}
+
+/// Decode the picture at `path` and hand back what we *would* store for it.
+///
+/// Writes nothing and needs no host id, which is what lets the editor preview
+/// a choice for a host that has not been saved yet. It also means picking a
+/// picture and then cancelling the dialog changes nothing on disk: the write
+/// happens on save, through [`import_host_icon`].
+///
+/// The returned bytes are the normalised ones, so an oversized image previews
+/// visibly resized rather than at its original size.
+#[tauri::command]
+pub async fn preview_host_icon(path: String) -> Result<tauri::ipc::Response, String> {
+    let png =
+        super::blocking(move || vnc_store::normalise_icon(std::path::Path::new(&path))).await?;
+    Ok(tauri::ipc::Response::new(png))
+}
+
+/// Normalise the picture at `path` and store it as this host's icon.
+///
+/// Called from the profile save, not from the picker, so the file and the
+/// `hosts.icon` value that points at it are written by the same gesture.
+#[tauri::command]
+pub async fn import_host_icon(
+    state: State<'_, AppState>,
+    host_id: String,
+    path: String,
+) -> Result<tauri::ipc::Response, String> {
+    let store = state.store.clone();
+    let png =
+        super::blocking(move || store.import_host_icon(&host_id, std::path::Path::new(&path)))
+            .await?;
+    Ok(tauri::ipc::Response::new(png))
+}
+
+/// This host's own icon file, or no bytes at all.
+///
+/// Only the `file` form is served here; a `builtin:` icon is already in the
+/// webview's hands from [`builtin_host_icons`], so fetching it back over IPC
+/// per tile would be pure overhead. Empty means "draw no icon", which is the
+/// answer for a host that never had one and for one whose file has gone
+/// missing alike: neither is an error worth interrupting the library for.
+#[tauri::command]
+pub async fn get_host_icon(
+    state: State<'_, AppState>,
+    host_id: String,
+) -> Result<tauri::ipc::Response, String> {
+    let store = state.store.clone();
+    let bytes: Option<Vec<u8>> = super::blocking(move || store.load_host_icon(&host_id)).await?;
+    Ok(tauri::ipc::Response::new(bytes.unwrap_or_default()))
+}
+
+/// Forget a host's imported icon file.
+///
+/// Called when the user switches that host to a bundled icon or to none, so
+/// the picture they replaced does not sit in the data directory forever.
+/// Clearing `hosts.icon` itself is the profile save's job.
+#[tauri::command]
+pub async fn clear_host_icon(state: State<'_, AppState>, host_id: String) -> Result<(), String> {
+    let store = state.store.clone();
+    super::blocking(move || store.delete_host_icon(&host_id)).await
+}
+
 /// Read a global app setting from the store's KV table.
 ///
 /// Used for preferences the Rust side must consult at connect time (so they

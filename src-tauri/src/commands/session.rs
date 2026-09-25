@@ -2323,16 +2323,31 @@ pub async fn open_session_window(
     let mut resolved_port = port;
     let mut name = title;
     let mut resolved_protocol = protocol;
+    // The host's own window icon, as PNG bytes. Only a saved profile can have
+    // one: an ad-hoc connect has nothing to hang the choice off.
+    let mut icon_png: Option<Vec<u8>> = None;
     if let Some(pid) = &profile_id {
         let store = state.store.clone();
         let lookup = pid.clone();
         let profile = super::blocking(move || store.get_host(&lookup))
             .await?
             .ok_or_else(|| format!("unknown host profile: {pid}"))?;
+        let icon_spec = profile.icon.clone();
         resolved_address.get_or_insert(profile.address);
         resolved_port.get_or_insert(profile.port);
         name.get_or_insert(profile.friendly_name);
         resolved_protocol.get_or_insert(profile.protocol);
+
+        let store = state.store.clone();
+        let lookup = pid.clone();
+        icon_png = super::blocking(move || {
+            Ok::<_, vnc_store::Error>(crate::hosticon::resolve(
+                &store,
+                &lookup,
+                icon_spec.as_deref(),
+            ))
+        })
+        .await?;
     }
     let kind = resolve_protocol(resolved_protocol.as_deref(), None)?;
 
@@ -2429,7 +2444,11 @@ pub async fn open_session_window(
         protocol: kind,
     };
     state.note_opening_window(&id, key, windows::session_label(&id));
-    if let Err(e) = windows::open_session_window(&app, &params, &name) {
+    // A session shown as a tab never reaches here, which is deliberate: tabs
+    // live in the library window, and giving that window one host's icon
+    // would mislabel every other tab in it.
+    let icon = icon_png.as_deref().and_then(crate::hosticon::to_image);
+    if let Err(e) = windows::open_session_window(&app, &params, &name, icon) {
         state.opening_windows.lock().remove(&id);
         return Err(e.to_string());
     }

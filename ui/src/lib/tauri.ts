@@ -720,6 +720,31 @@ export async function pickPrivateKeyFile(defaultPath?: string): Promise<string |
   return picked[0] ?? null;
 }
 
+/**
+ * Pick a picture to use as a host's icon.
+ *
+ * Filtered, unlike the private-key picker: these are ordinary image files
+ * that people keep among other files, so a filter is help rather than a trap.
+ * The list is what the shell can decode (`Store::import_host_icon`), so
+ * anything shown here will import. SVG is absent on purpose, there is no
+ * rasteriser in the shell and offering one that always failed would be worse
+ * than not offering it.
+ */
+export async function pickImageFile(): Promise<string | null> {
+  const picked = await nativeOpen({
+    multiple: false,
+    directory: false,
+    title: "Choose an icon",
+    filters: [
+      {
+        name: "Images",
+        extensions: ["png", "jpg", "jpeg", "webp", "bmp", "gif", "ico"],
+      },
+    ],
+  });
+  return picked[0] ?? null;
+}
+
 /** Is SSH reachable? Drives the enabled state of the Terminal button. */
 export function sshProbe(host: string, port?: number): Promise<boolean> {
   return safeInvoke<boolean>("ssh_probe", { host, port: port ?? 22, timeoutMs: 1500 }, false);

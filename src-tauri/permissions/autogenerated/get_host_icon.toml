@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-host-icon"
+description = "Enables the get_host_icon command without any pre-configured scope."
+commands.allow = ["get_host_icon"]
+
+[[permission]]
+identifier = "deny-get-host-icon"
+description = "Denies the get_host_icon command without any pre-configured scope."
+commands.deny = ["get_host_icon"]

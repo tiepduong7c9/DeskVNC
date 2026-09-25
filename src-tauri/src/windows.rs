@@ -1,5 +1,6 @@
 //! Session-window creation and monitor/fullscreen helpers (PRD/05 §5).
 
+use tauri::image::Image;
 use tauri::{
     AppHandle, Manager, PhysicalPosition, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
@@ -69,10 +70,17 @@ fn encode_component(value: &str) -> String {
 /// one `WebviewWindow` per session, label `session-<id>`). `title` is set
 /// through the native window API only, server-derived names are untrusted but
 /// harmless there (never interpolated into HTML).
+///
+/// `icon` is the host's own icon, if it chose one. What a platform does with
+/// it varies, and on two of them it does nothing at all; see
+/// [`crate::hosticon`] for which and why. It is handed to the builder rather
+/// than set after the fact so the window is never drawn wearing the
+/// application icon and swapping a frame later.
 pub fn open_session_window(
     app: &AppHandle,
     params: &SessionWindowParams<'_>,
     title: &str,
+    icon: Option<Image<'static>>,
 ) -> tauri::Result<WebviewWindow> {
     let label = session_label(params.session_id);
     if let Some(existing) = app.get_webview_window(&label) {
@@ -99,12 +107,20 @@ pub fn open_session_window(
     }
 
     let url = WebviewUrl::App(format!("index.html?{query}").into());
-    let window = WebviewWindowBuilder::new(app, &label, url)
+    let mut builder = WebviewWindowBuilder::new(app, &label, url)
         .title(title)
         .inner_size(1280.0, 800.0)
         .min_inner_size(640.0, 480.0)
-        .center()
-        .build()?;
+        .center();
+    if let Some(icon) = icon {
+        // `icon` consumes the builder and can only fail on an RGBA buffer whose
+        // length disagrees with its dimensions, which `Image::from_bytes` has
+        // already ruled out. There is no builder left to fall back to, so the
+        // error propagates; the caller turns it into a failed open rather than
+        // a window with no icon, and it is unreachable either way.
+        builder = builder.icon(icon)?;
+    }
+    let window = builder.build()?;
     Ok(window)
 }
 

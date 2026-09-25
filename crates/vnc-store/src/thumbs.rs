@@ -28,7 +28,7 @@ const MAX_THUMB_BYTES: u64 = 50 * 1024 * 1024;
 /// Everything outside `[A-Za-z0-9._-]` becomes `%XX`, which is injective (so
 /// two keys can never share a file) and leaves plain UUID keys, the only kind
 /// written before this existed, byte-for-byte unchanged.
-fn encode_key(key: &str) -> String {
+pub(crate) fn encode_key(key: &str) -> String {
     let mut out = String::with_capacity(key.len());
     for (i, byte) in key.bytes().enumerate() {
         let plain = byte.is_ascii_alphanumeric()

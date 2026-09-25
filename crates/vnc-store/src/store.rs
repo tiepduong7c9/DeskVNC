@@ -133,6 +133,28 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE hosts ADD COLUMN ssh_settings TEXT;
     "#,
+    // A profile can carry its own icon, which becomes the icon of the
+    // dedicated window it opens in (PRD/05 §5).
+    //
+    // Nullable with no default: NULL means "this host has no icon of its own"
+    // and every window it opens keeps the application icon, which is what
+    // every existing row meant and must keep meaning. A `DEFAULT` here would
+    // silently give every saved host an icon nobody chose.
+    //
+    // The column holds a short tagged string, not image bytes: `builtin:<key>`
+    // names one of the icons compiled into the binary, `file` means the PNG at
+    // `<data_dir>/host-icons/<host id>.png`. The store never parses it, for the
+    // same reason it never parses `rdp_settings`: a tag a newer build writes
+    // must leave the profile listable, editable and deletable by an older one,
+    // and the alternative (an enum, or a foreign key to an icons table) makes
+    // an unknown value a load failure instead of an icon that does not draw.
+    //
+    // Bytes stay out of SQLite deliberately. A user-supplied image has no
+    // useful size bound, and putting one in the row would drag it through
+    // every `SELECT * FROM hosts` the library does.
+    r#"
+    ALTER TABLE hosts ADD COLUMN icon TEXT;
+    "#,
 ];
 
 /// The canonical form of a host address, for deciding whether two spellings
@@ -261,9 +283,9 @@ impl Store {
                 security_pref, quality_pref, color_depth, scaling_mode, keyboard_mode,
                 passthrough, view_only, ssh_tunnel, wol_mac, wol_broadcast, network_id,
                 cert_pin, has_password, thumbnail_at, last_connected, connect_count,
-                created_at, updated_at, protocol, rdp_settings, ssh_settings
+                created_at, updated_at, protocol, rdp_settings, ssh_settings, icon
              ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,
-                       ?19,?20,?21,?22,?23,?24,?25,?26,?27,?28)
+                       ?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29)
              ON CONFLICT(id) DO UPDATE SET
                 friendly_name=excluded.friendly_name, address=excluded.address,
                 port=excluded.port, group_id=excluded.group_id, os_hint=excluded.os_hint,
@@ -277,7 +299,7 @@ impl Store {
                 thumbnail_at=excluded.thumbnail_at, last_connected=excluded.last_connected,
                 connect_count=excluded.connect_count, updated_at=excluded.updated_at,
                 protocol=excluded.protocol, rdp_settings=excluded.rdp_settings,
-                ssh_settings=excluded.ssh_settings",
+                ssh_settings=excluded.ssh_settings, icon=excluded.icon",
             params![
                 profile.id,
                 profile.friendly_name,
@@ -311,6 +333,7 @@ impl Store {
                 profile.protocol,
                 profile.rdp_settings,
                 profile.ssh_settings,
+                profile.icon,
             ],
         )?;
         tx.execute("DELETE FROM host_tags WHERE host_id = ?1", [&profile.id])?;
@@ -336,6 +359,7 @@ impl Store {
             tx.commit()?;
         }
         self.delete_thumbnail(id)?;
+        self.delete_host_icon(id)?;
         // Best-effort keychain cleanup. The encrypted-file fallback (if in
         // use) is cleaned by CredentialStore::delete, which the app layer
         // calls alongside this.
@@ -899,6 +923,7 @@ fn host_from_row(row: &Row<'_>) -> rusqlite::Result<HostProfile> {
             .unwrap_or_else(|| ProtocolKind::Vnc.as_str().to_string()),
         rdp_settings: row.get("rdp_settings")?,
         ssh_settings: row.get("ssh_settings")?,
+        icon: row.get("icon")?,
     })
 }
 
@@ -994,6 +1019,39 @@ mod tests {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(v as usize, MIGRATIONS.len());
+    }
+
+    #[test]
+    fn a_hosts_icon_survives_a_save_and_a_reload() {
+        let (_dir, store) = temp_store();
+        let mut host = sample_host("Studio", "10.0.0.9");
+        host.icon = Some("builtin:teal".into());
+        store.save_host(&host).unwrap();
+        assert_eq!(
+            store.get_host(&host.id).unwrap().unwrap().icon.as_deref(),
+            Some("builtin:teal")
+        );
+
+        // And clearing it is a real state, not "leave what was there". An
+        // upsert that quietly kept the old value would make removing an icon
+        // impossible from the editor.
+        host.icon = None;
+        store.save_host(&host).unwrap();
+        assert_eq!(store.get_host(&host.id).unwrap().unwrap().icon, None);
+    }
+
+    /// The column is opaque to the store, exactly like `rdp_settings`: a tag
+    /// written by a build with a larger palette must still list and edit here.
+    #[test]
+    fn an_icon_tag_this_build_does_not_know_is_preserved_verbatim() {
+        let (_dir, store) = temp_store();
+        let mut host = sample_host("Future", "10.0.0.10");
+        host.icon = Some("builtin:chartreuse".into());
+        store.save_host(&host).unwrap();
+        assert_eq!(
+            store.get_host(&host.id).unwrap().unwrap().icon.as_deref(),
+            Some("builtin:chartreuse")
+        );
     }
 
     #[test]
@@ -1664,7 +1722,8 @@ mod tests {
         );
         // Bump deliberately when a migration is added, so that adding one
         // is a decision recorded here rather than a silent schema drift.
-        assert_eq!(MIGRATIONS.len(), 4);
+        // v5 adds hosts.icon.
+        assert_eq!(MIGRATIONS.len(), 5);
 
         let got = store
             .get_host("host-uuid-1")

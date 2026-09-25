@@ -25,6 +25,7 @@
 
 mod creds;
 mod error;
+mod icons;
 pub(crate) mod models;
 mod rdp;
 mod rdpfile;
@@ -34,6 +35,9 @@ mod thumbs;
 
 pub use creds::{CredentialBackend, CredentialStore, KEYRING_SERVICE, MAX_CREDENTIAL_BLOB};
 pub use error::{Error, Result};
+pub use icons::{
+    normalise_icon, BUILTIN_ICON_PREFIX, FILE_ICON_TAG, ICON_SIZE, MAX_ICON_SOURCE_BYTES,
+};
 pub use models::{CertPin, Group, HistoryEntry, HostProfile, StoredCredentials, Tag};
 pub use rdp::RdpSettings;
 pub use rdpfile::{parse_rdp_file, RdpImport, MAX_RDP_FILE_BYTES, MAX_RDP_SETTINGS_BYTES};

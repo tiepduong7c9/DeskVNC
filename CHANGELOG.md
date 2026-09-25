@@ -10,6 +10,26 @@ to stored data and to the IPC contract between the Rust core and the frontend.
 
 ## [Unreleased]
 
+### Added
+
+- **A host can carry its own icon.** Pick one of eight bundled colours or a
+  picture of your own in the host editor, next to the friendly name. The icon
+  is drawn on the host's tile in the library, and on the dedicated window that
+  host opens in.
+
+  What the window part is worth depends on the desktop, and the hint in the
+  editor says so rather than promising more than it can deliver. Windows draws
+  it on the taskbar button and in the title bar. X11 desktops publish it as
+  `_NET_WM_ICON` and panels pick it up. Wayland ignores per-window icons
+  entirely (a compositor takes a window's icon from the `.desktop` file its
+  `app_id` matches, and every window this process opens shares one `app_id`),
+  and macOS has no per-window icon at all, because its Dock is per application
+  by design. On those two the library tile is where the choice shows.
+
+  A picture you choose is decoded, capped at 256 px and re-encoded as PNG into
+  the application data directory. The file you picked is copied, never merely
+  pointed at, so tidying your Downloads folder later cannot blank the icon.
+
 ### Changed
 
 - About now says who maintains this build. psmux remains credited as the

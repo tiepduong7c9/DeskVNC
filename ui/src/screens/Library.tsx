@@ -12,6 +12,7 @@ import { useHosts } from "../state/HostsContext";
 import { useDiscovery } from "../state/DiscoveryContext";
 import { useSettings, MAX_QUICK_CONNECT_HISTORY, type SortKey } from "../state/SettingsContext";
 import { useToasts } from "../state/ToastContext";
+import { clearHostIcon, FILE_ICON_TAG, importHostIcon } from "../lib/hostIcon";
 import type { DiscoveredHost, HostGroup, HostProfile, ProtocolKind } from "../lib/types";
 import { serializeRdpSettings } from "../lib/rdp";
 import { serializeSshSettings } from "../lib/ssh";
@@ -802,6 +803,7 @@ export function Library({
         tags: draft.tagIds,
         hasPassword: draft.hasPassword,
         protocol: draft.protocol,
+        icon: draft.icon,
         // An untouched settings object stores null, so the column only fills
         // once the user actually changes something and the Rust side keeps
         // applying its own defaults.
@@ -810,6 +812,17 @@ export function Library({
       });
       const id = saved?.id ?? draft.id;
       if (id) {
+        // The icon file is written here, not in the picker, so that choosing
+        // a picture and then cancelling the dialog leaves the stored icon
+        // alone. `iconFile` is only set when the user picked one this time
+        // round; a saved host whose icon nobody touched keeps its file.
+        if (draft.icon === FILE_ICON_TAG) {
+          if (draft.iconFile) await importHostIcon(id, draft.iconFile);
+        } else {
+          // Not using a picture any more, so do not leave one behind. A host
+          // that never had one makes this a no-op.
+          await clearHostIcon(id);
+        }
         // An RDP password belongs with its user name and domain, which are
         // three fields of one credential rather than a password on its own.
         if (draft.protocol === "rdp") {

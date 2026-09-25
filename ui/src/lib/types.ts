@@ -128,6 +128,12 @@ export interface HostProfile {
   rdpSettings: string | null;
   /** SSH-only options as a JSON blob; `null` for a non-SSH host. See `ssh.ts`. */
   sshSettings: string | null;
+  /**
+   * This host's own icon, or `null` for the application icon. Either
+   * `"builtin:<key>"` or `"file"`; see `hostIcon.ts` for what each resolves
+   * to and `src-tauri/src/hosticon.rs` for which platforms draw it.
+   */
+  icon: string | null;
 
   // ---- UI-local only: NOT columns in the hosts table, NOT sent by Rust ----
   /** Client-side flag; the backend has no `favorite` column yet. */
@@ -178,6 +184,7 @@ export function blankHostProfile(protocol: ProtocolKind = "vnc"): HostProfile {
     // column only fills once the user changes something.
     rdpSettings: null,
     sshSettings: null,
+    icon: null,
   };
 }
 

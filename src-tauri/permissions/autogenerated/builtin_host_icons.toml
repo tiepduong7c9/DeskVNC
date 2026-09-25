@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-builtin-host-icons"
+description = "Enables the builtin_host_icons command without any pre-configured scope."
+commands.allow = ["builtin_host_icons"]
+
+[[permission]]
+identifier = "deny-builtin-host-icons"
+description = "Denies the builtin_host_icons command without any pre-configured scope."
+commands.deny = ["builtin_host_icons"]
