@@ -162,6 +162,22 @@ pub fn scratch_len() -> usize {
 ///
 /// Every error is a [`DecodeError`]. No input makes this panic, loop without
 /// consuming, or write outside `dst`.
+/// The name of a block, for the error a block that overruns the message
+/// produces. The block type alone is not a number a reader can place.
+const fn block_name(block_type: u16) -> &'static str {
+    match block_type {
+        WBT_SYNC => "RFX_PROGRESSIVE_SYNC blockLen past the end of the message",
+        WBT_FRAME_BEGIN => "RFX_PROGRESSIVE_FRAME_BEGIN blockLen past the end of the message",
+        WBT_FRAME_END => "RFX_PROGRESSIVE_FRAME_END blockLen past the end of the message",
+        WBT_CONTEXT => "RFX_PROGRESSIVE_CONTEXT blockLen past the end of the message",
+        WBT_REGION => "RFX_PROGRESSIVE_REGION blockLen past the end of the message",
+        WBT_TILE_SIMPLE => "RFX_PROGRESSIVE_TILE_SIMPLE blockLen past the end of the message",
+        WBT_TILE_FIRST => "RFX_PROGRESSIVE_TILE_FIRST blockLen past the end of the message",
+        WBT_TILE_UPGRADE => "RFX_PROGRESSIVE_TILE_UPGRADE blockLen past the end of the message",
+        _ => "an unknown RFX_PROGRESSIVE_BLOCK blockLen past the end of the message",
+    }
+}
+
 pub fn decode_message(
     src: &[u8],
     state: &mut ProgressiveState,
@@ -181,6 +197,17 @@ pub fn decode_message(
         if block_len < BLOCK_HEADER {
             return Err(DecodeError::Range {
                 what: "RFX_PROGRESSIVE_BLOCK blockLen",
+                got: block_len as u32,
+            });
+        }
+        // A block that runs past the end of the message is reported as the
+        // block it claimed to be, with the length it claimed, rather than as
+        // a bare truncation. The two cases behind it need telling apart: a
+        // caller that handed us a short slice, and a stream whose blocks
+        // genuinely continue into a later message.
+        if block_len - BLOCK_HEADER > r.remaining() {
+            return Err(DecodeError::Range {
+                what: block_name(block_type),
                 got: block_len as u32,
             });
         }

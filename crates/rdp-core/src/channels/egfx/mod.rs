@@ -422,6 +422,12 @@ impl Egfx {
                 let surface = surfaces.get_mut(surface_id, "a wire to surface 2 command")?;
                 let has_alpha = surface.has_alpha;
                 let whole = surface.whole();
+                tracing::debug!(
+                    surface_id,
+                    codec_context_id,
+                    bitmap_data = bitmap_data.len(),
+                    "a progressive frame is about to be decoded"
+                );
                 let (progressive, mut dst) =
                     surface.progressive_view(whole, "a wire to surface 2 command")?;
                 decode::wire_to_surface(
