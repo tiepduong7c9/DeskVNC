@@ -148,7 +148,7 @@ pub fn wire_to_surface(
             };
             let stride = usize::from(w) * 4;
             uncompressed::decode(fmt, src, stride, &decoders.palette, dst)
-                .map_err(|e| refused("uncompressed", w, h, src.len(), &e))
+                .map_err(|e| refused("uncompressed", w, h, src, &e))
         }
         codec_id::PLANAR => planar::decode(
             src,
@@ -156,11 +156,11 @@ pub fn wire_to_surface(
             &mut decoders.planar,
             dst,
         )
-        .map_err(|e| refused("planar", w, h, src.len(), &e)),
+        .map_err(|e| refused("planar", w, h, src, &e)),
         codec_id::CLEARCODEC => decoders
             .clear
             .decode(src, dst)
-            .map_err(|e| refused("clearcodec", w, h, src.len(), &e)),
+            .map_err(|e| refused("clearcodec", w, h, src, &e)),
         // `RDPGFX_CODECID_CAVIDEO` is RemoteFX (MS-RDPEGFX 2.2.2.1). The
         // frame descriptor it returns is for the caller's damage tracking on
         // the Surface Bits path; inside EGFX the `destRect` already said
@@ -168,7 +168,7 @@ pub fn wire_to_surface(
         codec_id::CAVIDEO => {
             remotefx::decode_message(src, &mut decoders.rfx, &mut decoders.rfx_scratch, dst)
                 .map(|_| ())
-                .map_err(|e| refused("remotefx", w, h, src.len(), &e))
+                .map_err(|e| refused("remotefx", w, h, src, &e))
         }
         // Progressive RemoteFX (MS-RDPEGFX 2.2.4.2). The scratch is
         // RemoteFX's, which is the same four buffers and holds nothing
@@ -179,7 +179,7 @@ pub fn wire_to_surface(
         CAPROGRESSIVE => {
             progressive::decode_message(src, progressive_state, &mut decoders.rfx_scratch, dst)
                 .map(|_| ())
-                .map_err(|e| refused("progressive", w, h, src.len(), &e))
+                .map_err(|e| refused("progressive", w, h, src, &e))
         }
         // H.264 arrived with capability set version 10 and we advertise 8
         // and 8.1 only (`crate::channels::egfx::ADVERTISED`), so a server
@@ -226,10 +226,45 @@ fn wants_alpha(pixel_fmt: u8, surface_alpha: bool) -> bool {
 /// (PRDRDP/12 §6.4). A truncation reported against a length tells a codec
 /// that was handed a short buffer from one that misread a full one, which is
 /// the distinction `docs/RDP_SPEC_NOTES.md` §1.1 leaves open for ZGFX.
-fn refused(codec: &str, width: u16, height: u16, len: usize, e: &DecodeError) -> RdpError {
+fn refused(codec: &str, width: u16, height: u16, src: &[u8], e: &DecodeError) -> RdpError {
+    dump(codec, src);
     RdpError::Protocol(format!(
-        "the {codec} decoder refused a {width}x{height} egfx rectangle of {len} bytes: {e}"
+        "the {codec} decoder refused a {width}x{height} egfx rectangle of {} bytes: {e}",
+        src.len()
     ))
+}
+
+/// The environment variable that turns the bitstream dump on.
+pub const DUMP_ENV: &str = "DESKVNC_RDP_DUMP_REFUSED_BITSTREAM";
+
+/// Log the bitstream a decoder refused, as hex, when the switch is set.
+///
+/// PRDRDP/12 §6.4 keeps every byte of a bitstream out of an error message
+/// and this respects that: the dump is a log line, it is off unless someone
+/// turns it on for one session, and it is capped. What it buys is the only
+/// way to settle a codec reading that the specification left ambiguous, of
+/// which `rdp-codecs` has several. A refused bitstream is a few tens of
+/// bytes of a picture that did not decode, and the alternative is three
+/// build cycles of narrowing per question
+/// (`docs/RDP_SPEC_NOTES.md` §1.19).
+fn dump(codec: &str, src: &[u8]) {
+    if !matches!(std::env::var(DUMP_ENV).as_deref(), Ok("1")) {
+        return;
+    }
+    const MAX: usize = 512;
+    let shown = &src[..src.len().min(MAX)];
+    let mut hex = String::with_capacity(shown.len() * 2);
+    for b in shown {
+        use std::fmt::Write as _;
+        let _ = write!(hex, "{b:02x}");
+    }
+    tracing::info!(
+        codec,
+        len = src.len(),
+        truncated = src.len() > MAX,
+        hex,
+        "the bitstream a decoder refused"
+    );
 }
 
 #[cfg(test)]

@@ -1043,15 +1043,18 @@ pub mod clear {
         with_seq(&stream(&[], &bands, &[]), seq)
     }
 
-    /// RLEX with one segment per pixel: a palette of the distinct colours and
-    /// a run of one, with no suite. The suite path is the half of RLEX this
-    /// lane could not pin (see `clear::rlex_code`), so the encoder does not
-    /// emit it and no test here claims to cover it.
+    /// RLEX with one segment per run: a palette of the distinct colours, then
+    /// a segment of `suiteDepth` zero for each run.
+    ///
+    /// A segment paints `runLength + suiteDepth + 1` pixels, because
+    /// `suiteDepth` counts the entries after the first and the suite always
+    /// contributes one. So a run of `n` identical pixels is written as a run
+    /// length of `n - 1` and a one entry suite (`clear::rlex_code`).
     ///
     /// # Panics
     ///
-    /// On a rectangle with more than 127 distinct colours, which RLEX cannot
-    /// express.
+    /// On a rectangle with more than sixteen distinct colours, which a four
+    /// bit `stopIndex` cannot address.
     fn rlex(px: &[[u8; 3]]) -> Vec<u8> {
         let mut palette: Vec<[u8; 3]> = Vec::new();
         for p in px {
@@ -1059,10 +1062,7 @@ pub mod clear {
                 palette.push(*p);
             }
         }
-        assert!(
-            palette.len() <= 127,
-            "too many colours for one RLEX palette"
-        );
+        assert!(palette.len() <= 16, "too many colours for one RLEX palette");
         let mut out = vec![palette.len() as u8];
         for p in &palette {
             out.extend_from_slice(&[p[2], p[1], p[0]]);
@@ -1075,8 +1075,11 @@ pub mod clear {
                 run += 1;
             }
             let stop = palette.iter().position(|c| *c == v).unwrap();
-            out.push(stop as u8); // suite depth zero in the high bit
-            run_length(&mut out, run);
+            // `suiteDepth` zero in the high nibble, `stopIndex` in the low.
+            out.push(stop as u8);
+            // The suite paints the last pixel of the run, so the run length
+            // factor is one short of it.
+            run_length(&mut out, run - 1);
             at += run;
         }
         out

@@ -147,22 +147,26 @@ fn vbar_header(h: u16) -> VBar {
 /// Split an RLEX segment's first byte into a palette stop index and a suite
 /// depth (MS-RDPEGFX 2.2.4.1.3.1.2).
 ///
-/// **Not transcribed from the specification either**, and less well pinned
-/// than [`vbar_header`]. What is known: `paletteCount` is at most 127, so the
-/// stop index needs seven bits, which rules out the obvious four and four
-/// split PRDRDP/04 §4.8.4 also rules out. Seven bits of index leaves one bit
-/// of suite depth in a single byte, so that is what this implements.
+/// Four bits each: `suiteDepth` in the high nibble, `stopIndex` in the low
+/// one. The suite runs from `stopIndex - suiteDepth` to `stopIndex`
+/// inclusive, so a segment paints `runLength + suiteDepth + 1` pixels.
 ///
-/// A suite depth of one paints a single ramp pixel at `palette[stop - 1]`
-/// after the run, which is a plausible thing for a codec aimed at
-/// antialiased text edges to code and an implausibly small one for a field
-/// the specification bothered to name. So this is the reading most likely to
-/// be corrected by the MS-RDPEGFX §4 vector, and it is reported as such.
-/// Whichever way it turns out, the caller range checks both halves against
-/// `paletteCount` before using either, so a wrong split is a wrong picture
-/// and never a wrong memory access.
+/// # Why this is not the seven and one split it used to be
+///
+/// The old reading argued from `paletteCount`, which reaches 127 and so
+/// needs seven bits to index. That is true of the palette and not of this
+/// field: a four bit index reaches sixteen entries, and a server that never
+/// puts more than sixteen colours in one RLEX suite never needs more. A
+/// Windows host draws its first frame through this subcodec and the seven
+/// and one reading ran off the end of a 35 byte segment within a few
+/// entries, because every run length after the first was read at the wrong
+/// offset (`docs/RDP_SPEC_NOTES.md` §1.19).
+///
+/// The caller range checks both halves against `paletteCount` and refuses a
+/// depth that reaches below zero, so a wrong split is a wrong picture and
+/// never a wrong memory access.
 fn rlex_code(b: u8) -> (usize, usize) {
-    (usize::from(b & 0x7F), usize::from(b >> 7))
+    (usize::from(b & 0x0F), usize::from(b >> 4))
 }
 
 /// The escalating run length of MS-RDPEGFX 2.2.4.1.1 and 2.2.4.1.3.1.2.
@@ -784,37 +788,45 @@ impl ClearDecoder {
         while at < total {
             let (stop, depth) = rlex_code(r.u8()?);
             let run = run_length(&mut r)?;
-            if stop >= count || depth > stop {
+            if stop >= count {
                 return Err(DecodeError::Range {
                     what: "clearcodec RLEX stop index",
                     got: stop as u32,
                 });
             }
-            if run + depth == 0 {
+            // The suite is `palette[stop - depth ..= stop]`, so a depth
+            // deeper than the stop index reaches below the palette.
+            let Some(start) = stop.checked_sub(depth) else {
                 return Err(DecodeError::Range {
-                    what: "clearcodec RLEX segment length",
-                    got: 0,
+                    what: "clearcodec RLEX suite depth",
+                    got: depth as u32,
                 });
-            }
-            if run + depth > total - at {
+            };
+            // `suiteDepth` counts the entries after the first, so every
+            // segment paints at least one suite pixel and the zero length
+            // segment the old reading could produce does not exist.
+            let painted = run + depth + 1;
+            if painted > total - at {
                 return Err(DecodeError::Range {
                     what: "clearcodec RLEX overruns the rectangle",
-                    got: (run + depth) as u32,
+                    got: painted as u32,
                 });
             }
             let entry = |i: usize| {
                 let p = &palette[i * 3..i * 3 + 3];
                 (p[2], p[1], p[0])
             };
-            let (rr, gg, bb) = entry(stop);
+            // The run is the colour the suite starts from, not the one it
+            // ends on: a suite is a ramp away from the run's colour.
+            let (rr, gg, bb) = entry(start);
             for i in 0..run {
                 let p = at + i;
                 let out = dst.row(y0 + p / rw);
                 put::<BGRA>(&mut out[(x0 + p % rw) * 4..][..4], rr, gg, bb, 0xFF);
             }
             at += run;
-            for i in 0..depth {
-                let (rr, gg, bb) = entry(stop - depth + i);
+            for i in start..=stop {
+                let (rr, gg, bb) = entry(i);
                 let out = dst.row(y0 + at / rw);
                 put::<BGRA>(&mut out[(x0 + at % rw) * 4..][..4], rr, gg, bb, 0xFF);
                 at += 1;
@@ -881,12 +893,17 @@ mod tests {
         ));
     }
 
+    /// Four bits each: `stopIndex` low, `suiteDepth` high. The seven and one
+    /// split this replaced read every run length after the first at the wrong
+    /// offset, which is how a Windows host's first ClearCodec frame ran off
+    /// the end of a 35 byte segment (`docs/RDP_SPEC_NOTES.md` §1.19).
     #[test]
-    fn the_rlex_code_splits_seven_and_one() {
+    fn the_rlex_code_splits_four_and_four() {
         assert_eq!(rlex_code(0x00), (0, 0));
-        assert_eq!(rlex_code(0x7F), (127, 0));
-        assert_eq!(rlex_code(0x80), (0, 1));
-        assert_eq!(rlex_code(0xFF), (127, 1));
+        assert_eq!(rlex_code(0x0F), (15, 0));
+        assert_eq!(rlex_code(0xF0), (0, 15));
+        assert_eq!(rlex_code(0xFF), (15, 15));
+        assert_eq!(rlex_code(0x31), (1, 3), "stop 1, depth 3");
     }
 
     /// The escalating run length is a widening rather than a sum: the largest
@@ -1130,7 +1147,15 @@ mod tests {
     fn every_subcodec_writes_only_its_own_rectangle() {
         let (w, h) = (16u16, 12u16);
         let base = vec![[0u8, 0, 0]; 192];
-        let rect: Vec<[u8; 3]> = (0..24u8).map(|i| [i * 9, 255 - i * 9, 128]).collect();
+        // Twelve distinct colours across twenty four pixels: RLEX indexes its
+        // palette with four bits, so a rectangle needing more than sixteen
+        // is one that subcodec cannot express at all (`rlex_code`).
+        let rect: Vec<[u8; 3]> = (0..24u8)
+            .map(|i| {
+                let c = i % 12;
+                [c * 20, 255 - c * 20, 128]
+            })
+            .collect();
         for id in [SUBCODEC_RAW, SUBCODEC_NSCODEC, SUBCODEC_RLEX] {
             let src = enc::residual_plus_subcodec(&base, w, h, 4, 3, 6, 4, id, &rect);
             let mut buf = vec![0u8; dst_len(w, h)];

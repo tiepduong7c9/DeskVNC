@@ -751,7 +751,21 @@ split, which PRDRDP/04 §4.8.4 rules out on the same ground, would address
 only sixteen entries, and a decoder that never sees a palette larger than
 sixteen would not notice.
 
-Settling this needs the bytes: 35 of them, with a known `paletteCount` and a
-known 64x22 output, is small enough to solve completely rather than guess at.
-`docs/RDP_SPEC_NOTES.md` §1.1 records the same class of problem for the ZGFX
-token table, which turned out not to be on any path at all; this one is.
+**What is implemented now, and how sure it is.** Four bits each:
+`suiteDepth` in the high nibble, `stopIndex` in the low one, a suite running
+`palette[stopIndex - suiteDepth ..= stopIndex]`, and a segment painting
+`runLength + suiteDepth + 1` pixels. The run takes the colour the suite
+starts from rather than the one it ends on, because a suite is a ramp away
+from the run.
+
+The argument the old reading made from `paletteCount` is true of the palette
+and not of this field: four bits reach sixteen entries, and a server that
+never puts more than sixteen colours in one suite never needs more. That is
+consistent and it explains the failure, but it is still a reading rather
+than a transcription, and it has not yet met the frame that produced the
+error above.
+
+`DESKVNC_RDP_DUMP_REFUSED_BITSTREAM=1` logs the bitstream a decoder refused,
+as hex and capped, so the next such question costs one build cycle instead
+of three. It is off by default and never reaches an error message, which is
+what PRDRDP/12 §6.4 actually forbids.
