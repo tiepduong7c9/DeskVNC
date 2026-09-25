@@ -36,6 +36,7 @@
 //! credentials the profile already has, which is what happens today for every
 //! host. `LB_SMARTCARD_LOGON` is likewise carried and not acted on.
 
+use crate::options::RdstlsCredentials;
 use rdp_pdu::rdp::redirection::redir_flags;
 use rdp_pdu::rdp::ServerRedirectionPacket;
 use remote_core::ConnectOptions;
@@ -78,6 +79,10 @@ pub struct Redirection {
     /// `LB_DONTSTOREUSERNAME`: the user name in this packet is for this
     /// reconnection and must not be saved.
     dont_store_username: bool,
+    /// What RDSTLS needs, present when the password is ciphertext under a
+    /// certificate the packet supplied. The next attempt authenticates with
+    /// this instead of NLA (MS-RDPBCGR 2.2.17).
+    rdstls: Option<RdstlsCredentials>,
 }
 
 impl Redirection {
@@ -155,12 +160,35 @@ impl Redirection {
         // the only protocol that forwards it is RDSTLS, which this build
         // does not speak (`docs/RDP_SPEC_NOTES.md` §1.14).
         let password = if packet.password_is_encrypted() {
-            tracing::debug!(
-                "the redirection password is public key encrypted, which this build cannot read"
-            );
             None
         } else {
             packet.password.as_ref().map(|p| utf16_secret(p.expose()))
+        };
+
+        // An encrypted password is not a dead end, it is a different
+        // protocol. RDSTLS forwards the blob to the one machine that holds
+        // the private half, so the material is kept whole rather than
+        // dropped, and only when all of it is there: a request missing the
+        // GUID or the password has nothing to authenticate with.
+        let rdstls = match (
+            packet.password_is_encrypted(),
+            packet.redirection_guid.as_ref(),
+            packet.password.as_ref(),
+        ) {
+            (true, Some(guid), Some(password)) => Some(RdstlsCredentials {
+                redirection_guid: guid.as_slice().to_vec(),
+                username: utf16_bytes(packet.username.as_deref().unwrap_or_default()),
+                domain: utf16_bytes(packet.domain.as_deref().unwrap_or_default()),
+                password: password.expose().to_vec(),
+            }),
+            (true, _, _) => {
+                tracing::debug!(
+                    "the redirection password is encrypted but the packet carries no redirection \
+                     guid to authenticate with, so there is no rdstls request to make"
+                );
+                None
+            }
+            _ => None,
         };
 
         Some(Self {
@@ -179,6 +207,7 @@ impl Redirection {
                 .load_balance_info
                 .as_ref()
                 .map(|p| p.as_slice().to_vec()),
+            rdstls,
             dont_store_username: packet.redir_options & redir_flags::DONTSTOREUSERNAME != 0,
         })
     }
@@ -212,7 +241,12 @@ impl Redirection {
     /// `routing_token` is the caller's, because it belongs to the attempt and
     /// not to the profile: a token is presented once, to the host that issued
     /// it, and must not survive into an unrelated later connection.
-    pub fn apply(self, options: &mut ConnectOptions, routing_token: &mut Option<Vec<u8>>) {
+    pub fn apply(
+        self,
+        options: &mut ConnectOptions,
+        routing_token: &mut Option<Vec<u8>>,
+        rdstls: &mut Option<RdstlsCredentials>,
+    ) {
         let Self {
             target,
             fqdn,
@@ -220,6 +254,7 @@ impl Redirection {
             domain,
             password,
             routing_token: token,
+            rdstls: rdstls_credentials,
             ..
         } = self;
 
@@ -251,6 +286,7 @@ impl Redirection {
             options.credentials.password = Some(password.to_string());
         }
         *routing_token = token;
+        *rdstls = rdstls_credentials;
     }
 }
 
@@ -278,6 +314,7 @@ impl std::fmt::Debug for Redirection {
                 "routing_token_len",
                 &self.routing_token.as_ref().map(Vec::len),
             )
+            .field("rdstls", &self.rdstls)
             .finish()
     }
 }
@@ -296,6 +333,17 @@ fn is_plausible_target(target: &str) -> bool {
         && target
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '_' | '[' | ']'))
+}
+
+/// Transcode a string back into the UTF-16LE the wire carries, terminator
+/// included, which is the form an RDSTLS authentication request wants its
+/// user name and domain in. The empty string becomes a bare terminator,
+/// which is what a server that named no domain gets back.
+fn utf16_bytes(s: &str) -> Vec<u8> {
+    s.encode_utf16()
+        .chain(std::iter::once(0))
+        .flat_map(u16::to_le_bytes)
+        .collect()
 }
 
 /// Transcode a UTF-16LE field into a string that zeroizes when it drops.
@@ -343,7 +391,7 @@ mod tests {
 
         let mut options = ConnectOptions::rdp("broker.corp.example", 3389);
         let mut token = None;
-        redirect.apply(&mut options, &mut token);
+        redirect.apply(&mut options, &mut token, &mut None);
         assert_eq!(options.host, "10.0.0.7");
         assert_eq!(options.port, 3389, "a redirection carries no port");
         assert_eq!(
@@ -376,7 +424,7 @@ mod tests {
 
         let mut options = ConnectOptions::rdp("broker", 3389);
         let mut token = None;
-        redirect.apply(&mut options, &mut token);
+        redirect.apply(&mut options, &mut token, &mut None);
         assert_eq!(token.as_deref(), Some(&blob[..]));
     }
 
@@ -389,7 +437,7 @@ mod tests {
         p.password = Some(rdp_pdu::rdp::SecretBytes::new(utf16("hunter2")));
         let redirect = Redirection::from_packet(&p).expect("followed");
         let mut options = ConnectOptions::rdp("broker", 3389);
-        redirect.apply(&mut options, &mut None);
+        redirect.apply(&mut options, &mut None, &mut None);
         assert_eq!(options.credentials.password.as_deref(), Some("hunter2"));
 
         let mut p = packet();
@@ -397,7 +445,7 @@ mod tests {
         p.redir_options |= redir_flags::PASSWORD_IS_PK_ENCRYPTED;
         let redirect = Redirection::from_packet(&p).expect("followed");
         let mut options = ConnectOptions::rdp("broker", 3389);
-        redirect.apply(&mut options, &mut None);
+        redirect.apply(&mut options, &mut None, &mut None);
         assert_eq!(options.credentials.password, None);
     }
 
@@ -472,7 +520,7 @@ mod tests {
 
         let mut options = ConnectOptions::rdp("fedora.local", 3389);
         let mut token = None;
-        redirect.apply(&mut options, &mut token);
+        redirect.apply(&mut options, &mut token, &mut None);
         assert_eq!(
             options.host, "fedora.local",
             "a handover names no target, so the host is the one we already had"
@@ -483,6 +531,66 @@ mod tests {
             Some(&b"Cookie: msts=3739063820.15629.0000\r\n"[..]),
             "the cookie is what the next connection request presents"
         );
+    }
+
+    /// The gnome-remote-desktop handover in full: no target, a routing
+    /// token, a one time user name, a redirection GUID, and a password
+    /// encrypted under a certificate the packet supplies. None of that is a
+    /// credential this client can read, and all of it is an RDSTLS
+    /// authentication request (`docs/RDP_SPEC_NOTES.md` §1.14).
+    #[test]
+    fn an_encrypted_handover_password_is_kept_for_rdstls() {
+        let mut p = ServerRedirectionPacket::new(0);
+        p.load_balance_info = Some(Payload::new(b"Cookie: msts=1.2.3\r\n"));
+        p.username = Some("one-time".to_owned());
+        p.password = Some(rdp_pdu::rdp::SecretBytes::new(vec![0xde, 0xad, 0xbe, 0xef]));
+        p.redirection_guid = Some(Payload::new(&[0xaa; 16]));
+        p.target_certificate = Some(Payload::new(b"a certificate"));
+        p.redir_options |= redir_flags::PASSWORD_IS_PK_ENCRYPTED;
+
+        let redirect = Redirection::from_packet(&p).expect("followed");
+        let mut options = ConnectOptions::rdp("fedora.local", 3389);
+        let mut token = None;
+        let mut rdstls = None;
+        redirect.apply(&mut options, &mut token, &mut rdstls);
+
+        let rdstls = rdstls.expect("rdstls credentials");
+        assert_eq!(rdstls.redirection_guid, [0xaa; 16]);
+        assert_eq!(
+            rdstls.password,
+            [0xde, 0xad, 0xbe, 0xef],
+            "the ciphertext is forwarded, not transcoded"
+        );
+        assert_eq!(
+            rdstls.username,
+            b"o\0n\0e\0-\0t\0i\0m\0e\0\0\0".to_vec(),
+            "the user name goes back out as the UTF-16LE it arrived as"
+        );
+        assert_eq!(rdstls.domain, vec![0, 0], "no domain is a bare terminator");
+        assert!(
+            options.credentials.password.is_none(),
+            "an encrypted password is never presented as a typed one"
+        );
+    }
+
+    /// An encrypted password with no GUID names nothing to authenticate as,
+    /// so there is no request to make and offering RDSTLS would be asking
+    /// for a protocol we cannot finish.
+    #[test]
+    fn an_encrypted_password_without_a_guid_produces_no_rdstls_request() {
+        let mut p = packet();
+        p.password = Some(rdp_pdu::rdp::SecretBytes::new(vec![0xde, 0xad]));
+        p.redir_options |= redir_flags::PASSWORD_IS_PK_ENCRYPTED;
+        assert!(p.redirection_guid.is_none());
+
+        let redirect = Redirection::from_packet(&p).expect("followed");
+        let mut rdstls = None;
+        redirect.apply(
+            &mut ConnectOptions::rdp("broker", 3389),
+            &mut None,
+            &mut rdstls,
+        );
+        assert!(rdstls.is_none());
     }
 
     /// The one redirection that is genuinely unusable: it names no host to

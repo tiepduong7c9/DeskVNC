@@ -150,6 +150,9 @@ pub struct Continuity {
     /// In: the `LoadBalanceInfo` a redirection told us to present in the next
     /// X.224 Connection Request's routing token (MS-RDPBCGR 3.2.5.3.1).
     pub routing_token: Option<Vec<u8>>,
+    /// The RDSTLS material of the redirection being followed, scoped to the
+    /// next attempt exactly like [`Continuity::routing_token`].
+    pub rdstls: Option<crate::options::RdstlsCredentials>,
     /// Out: the redirection this attempt was told to follow
     /// (MS-RDPBCGR 2.2.13.1).
     pub redirect: Option<Redirection>,
@@ -224,7 +227,7 @@ pub fn absorb_attempt(
             // trip and a rejection (PRDRDP/06 §5.5.5).
             carry.cookie = None;
             let why = redirect.describe();
-            redirect.apply(options, &mut carry.routing_token);
+            redirect.apply(options, &mut carry.routing_token, &mut carry.rdstls);
             RunOutcome::Reattempt { why }
         }
         // A logoff and an administrative close are both deliberate, and

@@ -146,6 +146,45 @@ pub struct ResolvedOptions {
     /// [`ResolvedOptions::resolve`] always sets it to `None`. The session
     /// fills it in afterwards, which is the only way in.
     pub routing_token: Option<Vec<u8>>,
+    /// The RDSTLS authentication material a Server Redirection handed us
+    /// (MS-RDPBCGR 2.2.17), when it carried a password encrypted under the
+    /// target's certificate.
+    ///
+    /// Scoped to one attempt and never persisted, exactly like
+    /// [`ResolvedOptions::routing_token`], and set the same way: `resolve`
+    /// always leaves it `None` and the session fills it in.
+    pub rdstls: Option<RdstlsCredentials>,
+}
+
+/// What an RDSTLS authentication request needs, lifted out of a Server
+/// Redirection (MS-RDPBCGR 2.2.13.1) and ready for 2.2.17.2.
+///
+/// Bytes rather than strings throughout. The user name and the domain were
+/// UTF-16LE on the wire and go back out that way, and the password is
+/// ciphertext this client cannot read and must not alter.
+#[derive(Clone, PartialEq, Eq)]
+pub struct RdstlsCredentials {
+    /// `RedirectionGuid`, verbatim.
+    pub redirection_guid: Vec<u8>,
+    /// `UserName`, UTF-16LE with its terminator.
+    pub username: Vec<u8>,
+    /// `Domain`, UTF-16LE with its terminator, empty when none was named.
+    pub domain: Vec<u8>,
+    /// `Password`, encrypted under the target certificate's public key.
+    pub password: Vec<u8>,
+}
+
+/// Lengths only. The password is a credential even though it is ciphertext,
+/// and the GUID is a bearer token for one session.
+impl std::fmt::Debug for RdstlsCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RdstlsCredentials")
+            .field("redirection_guid_len", &self.redirection_guid.len())
+            .field("username_len", &self.username.len())
+            .field("domain_len", &self.domain.len())
+            .field("password_len", &self.password.len())
+            .finish()
+    }
 }
 
 /// `cliprdr`, the clipboard channel (MS-RDPECLIP). Seven significant
@@ -306,8 +345,10 @@ impl ResolvedOptions {
             channels,
             quality: options.quality,
             // A redirection is the only thing that puts a token here, and it
-            // does it after this function has run.
+            // does it after this function has run. The same goes for the
+            // RDSTLS material below.
             routing_token: None,
+            rdstls: None,
         })
     }
 

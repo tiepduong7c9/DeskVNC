@@ -77,6 +77,7 @@ pub async fn run_once(
     // taken rather than borrowed: a token is presented once, to the host that
     // issued it.
     opts.routing_token = carry.routing_token.take();
+    opts.rdstls = carry.rdstls.take();
 
     // MS-RDPBCGR 5.5 step 3: the cookie goes in the Client Info PDU of the
     // attempt after the one that received it. A stale one is treated as

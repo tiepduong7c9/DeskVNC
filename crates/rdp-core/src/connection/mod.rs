@@ -45,6 +45,7 @@ pub mod mcs;
 pub mod negotiate;
 pub mod nla;
 pub mod prompt;
+pub mod rdstls;
 pub mod trust;
 
 use remote_core::{Credentials, SessionEvent, SessionState};
@@ -153,6 +154,27 @@ pub async fn after_upgrade<S: AsyncRead + AsyncWrite + Unpin>(
     prompt: Option<Prompt<'_>>,
 ) -> Result<Connected> {
     let mut method = selected.method();
+
+    if selected == SecurityProtocol::Rdstls {
+        // Nothing to ask the user for: every field was handed to us by the
+        // redirection that ended the previous attempt, and a failure here is
+        // a statement about those credentials rather than about a password
+        // anyone typed (`rdstls`).
+        let Some(creds) = opts.rdstls.as_ref() else {
+            // `negotiate` only offers RDSTLS when these are present and
+            // `select_protocol` only accepts it when it was offered, so this
+            // is unreachable through the session. A test driving the phases
+            // by hand can still get here, and a panic would be the wrong
+            // answer to it.
+            return Err(RdpError::Protocol(
+                "the server selected RDSTLS but no redirection supplied credentials for it \
+                 (MS-RDPBCGR 2.2.17)"
+                    .to_owned(),
+            ));
+        };
+        remote_core::emit_state(events, ConnectStage::Rdstls.session_state(method)).await?;
+        rdstls::authenticate(framer, creds).await?;
+    }
 
     if selected.wants_credssp() {
         // Ask for whatever CredSSP needs and does not have, before the state

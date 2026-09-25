@@ -523,10 +523,26 @@ your client". `negotiate.rs` is equally clear in the other direction, listing
 `RDSTLS` and `RDSAAD` among the protocols "we did not" implement, and
 `REQUESTED_PROTOCOLS` offers only `SSL | HYBRID`.
 
-The work is a protocol, not a flag: request `PROTOCOL_RDSTLS` on the
-redirected attempt only, run a plain TLS handshake instead of CredSSP, and
-exchange the three PDUs of MS-RDPBCGR 2.2.17 over it. `Redirection` would
-also have to keep the redirection GUID and the encrypted password blob, both
-of which it currently drops.
+**What was built.** `crates/rdp-pdu/src/rdstls.rs` for the three structures
+and `crates/rdp-core/src/connection/rdstls.rs` for the exchange.
+`PROTOCOL_RDSTLS` is offered only when a redirection supplied credentials
+(`negotiate::requested_protocols`) and accepted only when it was offered,
+because a client that asks for this protocol without a redirection behind it
+has nothing to send when the server obliges. `Redirection` now keeps the
+redirection GUID and the ciphertext instead of dropping them.
 
-Sections 1.12 and 1.13 are settled and shipped; this is what is left.
+**What is still open.** Two details of 2.2.17 are inferred rather than read
+off a wire, and the first run against gnome-remote-desktop is what settles
+them:
+
+* That these PDUs carry no TPKT header and no length prefix, so each read is
+  an `Expect::Exact` of a fixed size. Every structure except the
+  authentication request is fixed length, and the client only writes that
+  one.
+* That the server speaks first with the capabilities PDU. If it waits for us
+  instead, the exchange times out against `ConnectStage::Rdstls` rather than
+  failing in a way that needs interpreting.
+
+`RDSTLS_DATA_CAPABILITIES`, `RDSTLS_DATA_PASSWORD_CREDS` and
+`RDSTLS_DATA_RESULT_CODE` are all 0x0001: the field distinguishes bodies
+within a `PduType`, not across them.
