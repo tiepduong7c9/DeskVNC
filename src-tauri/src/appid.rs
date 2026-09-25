@@ -88,14 +88,71 @@ pub fn app_id_if_published(host_id: &str) -> Option<String> {
     entry_path(host_id)?.is_file().then_some(app_id)
 }
 
-/// Where the icon a desktop file points at is kept.
+/// Where the icons desktop files point at are kept.
 ///
 /// A separate copy from `host-icons/`, because a bundled icon has no file at
 /// all (it is compiled into the binary) and `Icon=` needs a path on disk. One
 /// place for both kinds keeps the write and the cleanup single-branched.
-pub fn icon_path(data_dir: &Path, host_id: &str) -> Option<PathBuf> {
+fn icon_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join("desktop-icons")
+}
+
+/// A short, content-derived tag for a picture.
+///
+/// FNV-1a, and nothing turns on it being hard to collide: this exists to make
+/// two different pictures land on two different file names, not to
+/// authenticate anything.
+fn content_tag(png: &[u8]) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in png {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
+
+/// Where this host's icon goes, named for the picture it holds.
+///
+/// The content tag in the name is load bearing. GNOME caches the icon it
+/// loaded for an application and only reconsiders when the `.desktop` file
+/// changes; writing different pixels to the same path leaves both the file and
+/// the cache untouched, so changing a host's icon changed nothing in the dock.
+/// A new picture means a new path, which means a changed `Icon=` line, which
+/// is what makes the shell look again.
+pub fn icon_path(data_dir: &Path, host_id: &str, png: &[u8]) -> Option<PathBuf> {
     let app_id = app_id_for(host_id)?;
-    Some(data_dir.join("desktop-icons").join(format!("{app_id}.png")))
+    Some(icon_dir(data_dir).join(format!("{app_id}-{tag}.png", tag = content_tag(png))))
+}
+
+/// Delete every icon file belonging to a host, except `keep`.
+///
+/// Icons are content-named, so changing one leaves the previous file behind.
+/// The prefix match also catches the un-tagged name an earlier build wrote,
+/// which would otherwise sit there forever.
+fn prune_icons(data_dir: &Path, host_id: &str, keep: Option<&Path>) {
+    let Some(app_id) = app_id_for(host_id) else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(icon_dir(data_dir)) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if Some(path.as_path()) == keep {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        // `<app_id>-<tag>.png`, or `<app_id>.png` from before tags existed.
+        // Anchored on the separator so one host id cannot match another's
+        // files by being a prefix of it.
+        let mine = name == format!("{app_id}.png")
+            || (name.starts_with(&format!("{app_id}-")) && name.ends_with(".png"));
+        if mine {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
 }
 
 /// Escape a value for a desktop entry.
@@ -160,7 +217,7 @@ fn entry_text(app_id: &str, name: &str, icon: &Path) -> String {
 /// icon, never a session that fails to open.
 pub fn publish(data_dir: &Path, host_id: &str, name: &str, icon_png: &[u8]) -> Option<String> {
     let app_id = app_id_for(host_id)?;
-    let icon = icon_path(data_dir, host_id)?;
+    let icon = icon_path(data_dir, host_id, icon_png)?;
     let entry = entry_path(host_id)?;
 
     if let Err(e) = write_file(&icon, icon_png) {
@@ -171,6 +228,10 @@ pub fn publish(data_dir: &Path, host_id: &str, name: &str, icon_png: &[u8]) -> O
         tracing::warn!(host = %host_id, "could not write the desktop entry: {e}");
         return None;
     }
+    // After the entry points at the new file, never before: a crash in between
+    // leaves a spare icon on disk, which is harmless, rather than an entry
+    // naming one that is gone.
+    prune_icons(data_dir, host_id, Some(&icon));
     Some(app_id)
 }
 
@@ -196,16 +257,14 @@ fn write_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// would put a stale entry in the user's applications directory, naming a
 /// machine their library no longer has.
 pub fn withdraw(data_dir: &Path, host_id: &str) {
-    for path in [entry_path(host_id), icon_path(data_dir, host_id)]
-        .into_iter()
-        .flatten()
-    {
+    if let Some(path) = entry_path(host_id) {
         match std::fs::remove_file(&path) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => tracing::warn!(path = %path.display(), "could not remove: {e}"),
         }
     }
+    prune_icons(data_dir, host_id, None);
 }
 
 /// Tell the compositor this window is its own application.
@@ -313,6 +372,57 @@ mod tests {
             1,
             "the name must not be able to add a second Exec"
         );
+    }
+
+    /// The point of naming icons by content. GNOME only reconsiders an
+    /// application's icon when its `.desktop` file changes, so a new picture
+    /// has to arrive at a new path or the dock keeps showing the old one.
+    #[test]
+    fn a_different_picture_lands_on_a_different_path() {
+        let dir = Path::new("/data");
+        let host = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
+        let one = icon_path(dir, host, b"first picture").unwrap();
+        let two = icon_path(dir, host, b"second picture").unwrap();
+        assert_ne!(one, two);
+        // And the same picture is stable, or every save would rewrite the
+        // entry and make the shell re-read it for nothing.
+        assert_eq!(icon_path(dir, host, b"first picture").unwrap(), one);
+
+        let entry_one = entry_text("deskvncviewer-host-x", "Studio", &one);
+        let entry_two = entry_text("deskvncviewer-host-x", "Studio", &two);
+        assert_ne!(
+            entry_one, entry_two,
+            "the entry must change when the icon does, or nothing re-reads it"
+        );
+    }
+
+    #[test]
+    fn changing_an_icon_leaves_no_stale_files_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path();
+        let host = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
+
+        let first = icon_path(data, host, b"first").unwrap();
+        write_file(&first, b"first").unwrap();
+        // The un-tagged name an earlier build wrote, which must also go.
+        let legacy = icon_dir(data).join(format!("{}.png", app_id_for(host).unwrap()));
+        write_file(&legacy, b"legacy").unwrap();
+        // Another host's icon, which must NOT go.
+        let other = icon_path(data, "11111111-2222-3333-4444-555555555555", b"x").unwrap();
+        write_file(&other, b"x").unwrap();
+
+        let second = icon_path(data, host, b"second").unwrap();
+        write_file(&second, b"second").unwrap();
+        prune_icons(data, host, Some(&second));
+
+        assert!(second.is_file(), "the current icon must survive");
+        assert!(!first.exists(), "the replaced icon must go");
+        assert!(!legacy.exists(), "an untagged icon must go");
+        assert!(other.is_file(), "another host's icon must be left alone");
+
+        withdraw(data, host);
+        assert!(!second.exists(), "withdrawing takes the current icon too");
+        assert!(other.is_file());
     }
 
     /// Proven by making the file unwritable rather than by watching its

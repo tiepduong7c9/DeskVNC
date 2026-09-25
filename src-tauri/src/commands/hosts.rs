@@ -105,6 +105,25 @@ fn withdraw_desktop_entry(store: &vnc_store::Store, host_id: &str) {
     crate::appid::withdraw(store.data_dir(), host_id);
 }
 
+/// Bring a host's desktop entry back in line with what the host now says.
+///
+/// For the icon commands, which change what a host's icon *is* without
+/// carrying the profile. The editor saves the profile first and writes the
+/// picture after, so the entry that save produced still describes the picture
+/// that was there a moment earlier; this replaces it.
+///
+/// A host that no longer resolves to an icon, or no longer exists, has its
+/// entry withdrawn.
+#[allow(unused_variables)]
+fn refresh_desktop_entry(store: &vnc_store::Store, host_id: &str) {
+    #[cfg(target_os = "linux")]
+    match store.get_host(host_id) {
+        Ok(Some(profile)) => publish_desktop_entry(store, &profile),
+        Ok(None) => withdraw_desktop_entry(store, host_id),
+        Err(e) => tracing::warn!(host = %host_id, "could not refresh the dock icon: {e}"),
+    }
+}
+
 /// Bump `last_connected`/`connect_count` after a successful connect.
 #[tauri::command]
 pub async fn touch_connected(state: State<'_, AppState>, host_id: String) -> Result<(), String> {
@@ -287,9 +306,15 @@ pub async fn import_host_icon(
     path: String,
 ) -> Result<tauri::ipc::Response, String> {
     let store = state.store.clone();
+    let host = host_id.clone();
     let png =
         super::blocking(move || store.import_host_icon(&host_id, std::path::Path::new(&path)))
             .await?;
+    // The entry the profile save produced still describes the previous
+    // picture: the file it names is only written here. Without this the dock
+    // kept the old icon, which is the whole reason a change looked like it
+    // had not happened.
+    refresh_desktop_entry(&state.store, &host);
     Ok(tauri::ipc::Response::new(png))
 }
 
@@ -318,10 +343,14 @@ pub async fn get_host_icon(
 #[tauri::command]
 pub async fn clear_host_icon(state: State<'_, AppState>, host_id: String) -> Result<(), String> {
     let store = state.store.clone();
-    // The dock entry goes with it. A host that has stopped using an icon must
-    // not leave one named after it in the user's applications directory.
-    withdraw_desktop_entry(&store, &host_id);
-    super::blocking(move || store.delete_host_icon(&host_id)).await
+    let host = host_id.clone();
+    super::blocking(move || store.delete_host_icon(&host_id)).await?;
+    // Refreshed rather than withdrawn: this is also the path taken when a host
+    // moves from a picture of its own to a *bundled* icon, and the profile
+    // saved a moment ago already says so. Withdrawing here deleted the entry
+    // that save had just written, so a bundled icon never reached the dock.
+    refresh_desktop_entry(&state.store, &host);
+    Ok(())
 }
 
 /// Read a global app setting from the store's KV table.
