@@ -74,11 +74,33 @@ jobs:
       # `tauri.conf.json` sets `targets: all`, which on Linux means deb, rpm
       # and AppImage. `--bundles deb,rpm` narrows that: AppImage roughly
       # doubles the job for a format this fork does not ship.
+      # On a v* tag this also creates the release and attaches the packages
+      # to it; on a manual run `tagName` is empty and it only builds. Both
+      # jobs name the same tag, and the action attaches to an existing
+      # release rather than making a second one.
+      #
+      # The release is a draft so that it becomes visible only once somebody
+      # has seen both architectures arrive. A published release that is
+      # missing the job still running is worse than one nobody can see yet.
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           args: --target ${{ matrix.target }} --bundles deb,rpm
+          tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+          releaseName: DeskVNCViewer ${{ github.ref_name }}
+          releaseBody: |
+            Linux packages for x86_64 and aarch64. This is a fork build: it is
+            not an upstream release and the tag exists only in this fork.
+
+            Install the `.rpm` on Fedora and related distributions, the `.deb`
+            on Debian and Ubuntu. Both are unsigned. They are built on Ubuntu
+            22.04, which is the oldest glibc they will install against.
+
+            What changed is in
+            [CHANGELOG.md](https://github.com/tiepduong7c9/DeskVNC/blob/main/CHANGELOG.md).
+          releaseDraft: true
+          prerelease: false
 
       - name: Show what was built
         run: ls -la target/${{ matrix.target }}/release/bundle/deb target/${{ matrix.target }}/release/bundle/rpm

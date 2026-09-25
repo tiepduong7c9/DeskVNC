@@ -10,6 +10,53 @@ to stored data and to the IPC contract between the Rust core and the frontend.
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-09-25
+
+This is a fork release. It is not an upstream version and the tag exists only
+in this fork.
+
+### Added
+
+- GNOME's built-in screen sharing (gnome-remote-desktop) now works. That
+  server hands a client from its system daemon to the user's session with a
+  Server Redirection naming no target, authenticates the returning connection
+  with RDSTLS (MS-RDPBCGR 2.2.17), and paints through the graphics pipeline
+  and nothing else. All three are now implemented, and a session connects,
+  draws, resizes and carries a clipboard.
+- "Use the graphics pipeline" in the host editor, off by default. The two
+  server families want opposite answers: GNOME refuses a client that does not
+  advertise it, and a Windows computer draws correctly without it and is
+  better off not being asked.
+
+### Fixed
+
+- The clipboard now works in both directions against a Windows computer.
+  Three separate faults had to go before any of them showed progress: a
+  `cliprdr` PDU without `CHANNEL_FLAG_SHOW_PROTOCOL`, which Windows discards
+  without comment; a clipboard library that cannot reach Wayland under GNOME,
+  where the Linux build now uses GTK directly instead of falling back to
+  XWayland; and no answer to a server's format list, so a copy on the remote
+  computer never reached the local clipboard.
+- Connect-time network auto-detection (MS-RDPBCGR 2.2.14) is answered.
+  gnome-remote-desktop waits for it and will not continue without it.
+- A Server Redirection's `LoadBalanceInfo` is the whole routing token and is
+  written through untouched rather than given a second prefix and terminator.
+  This would have affected any Windows Remote Desktop broker.
+- Client to server graphics messages no longer carry an `RDP_SEGMENTED_DATA`
+  envelope, which frames the server to client direction only. A server read
+  the segment descriptor as a command id and ended the session.
+- A progressive graphics frame sent through `WIRE_TO_SURFACE_2` is decoded
+  rather than refused, and its `bitmapDataLength` is read.
+- No cache import offer is sent when there is no cache to offer. An offer of
+  zero entries is a different statement, and Windows ends the session on one.
+
+### Known issues
+
+- The graphics pipeline against a Windows computer stops at a ClearCodec
+  cache miss and is off by default for that reason. Windows draws correctly
+  through the path it has always used; this blocks an improvement rather than
+  a working connection. `docs/RDP_SPEC_NOTES.md` §1.20 has the detail.
+
 ## [0.27.4] - 2026-09-23
 
 ### Fixed
