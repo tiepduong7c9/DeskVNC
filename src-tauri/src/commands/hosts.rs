@@ -40,7 +40,20 @@ pub async fn save_host(
 #[tauri::command]
 pub async fn delete_host(state: State<'_, AppState>, host_id: String) -> Result<(), String> {
     let store = state.store.clone();
+    // Before the row goes, so a failed delete does not strand a desktop entry
+    // for a host that is still in the library.
+    withdraw_desktop_entry(&store, &host_id);
     super::blocking(move || store.delete_host(&host_id)).await
+}
+
+/// Take back the generated desktop entry a host's dock icon needs.
+///
+/// A no-op off Linux, and off Linux there is nothing to take back: only GNOME
+/// needs a file on disk to match a window to an icon (see `crate::appid`).
+#[allow(unused_variables)]
+fn withdraw_desktop_entry(store: &vnc_store::Store, host_id: &str) {
+    #[cfg(target_os = "linux")]
+    crate::appid::withdraw(store.data_dir(), host_id);
 }
 
 /// Bump `last_connected`/`connect_count` after a successful connect.
@@ -256,6 +269,9 @@ pub async fn get_host_icon(
 #[tauri::command]
 pub async fn clear_host_icon(state: State<'_, AppState>, host_id: String) -> Result<(), String> {
     let store = state.store.clone();
+    // The dock entry goes with it. A host that has stopped using an icon must
+    // not leave one named after it in the user's applications directory.
+    withdraw_desktop_entry(&store, &host_id);
     super::blocking(move || store.delete_host_icon(&host_id)).await
 }
 

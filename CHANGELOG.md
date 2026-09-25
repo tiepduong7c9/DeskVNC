@@ -17,14 +17,19 @@ to stored data and to the IPC contract between the Rust core and the frontend.
   is drawn on the host's tile in the library, and on the dedicated window that
   host opens in.
 
-  What the window part is worth depends on the desktop, and the hint in the
-  editor says so rather than promising more than it can deliver. Windows draws
-  it on the taskbar button and in the title bar. X11 desktops publish it as
-  `_NET_WM_ICON` and panels pick it up. Wayland ignores per-window icons
-  entirely (a compositor takes a window's icon from the `.desktop` file its
-  `app_id` matches, and every window this process opens shares one `app_id`),
-  and macOS has no per-window icon at all, because its Dock is per application
-  by design. On those two the library tile is where the choice shows.
+  What the window part is worth depends on the desktop. Windows draws it on the
+  taskbar button and in the title bar, and X11 panels read it from
+  `_NET_WM_ICON`. macOS has no per-window icon at all, its Dock being per
+  application by design, so there the tile is where the choice shows.
+
+  GNOME needed more than a window icon and now gets it. Its dash, and
+  dash-to-dock with it, groups by application and takes each icon from the
+  `.desktop` file a window's `app_id` matches, never from the window itself.
+  So a host with an icon gets a hidden desktop entry of its own in
+  `~/.local/share/applications`, and its session window is given the matching
+  `app_id` before the compositor first sees it. The entry is removed when the
+  host is deleted or gives up its icon, and a library where nobody sets an icon
+  writes nothing at all.
 
   A picture you choose is decoded, capped at 256 px and re-encoded as PNG into
   the application data directory. The file you picked is copied, never merely

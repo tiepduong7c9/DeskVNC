@@ -73,6 +73,14 @@ crossbeam-channel = "0.5"
 # Wayland client's clipboard, so it needs no bridge. Versions track what tauri
 # already resolves (gtk 0.18 / gdk 0.18), so no second GTK enters the graph.
 gtk = "0.18"
+# Per-window `app_id`, which is the only thing a Wayland compositor matches a
+# window to a `.desktop` file (and therefore to a dock icon) with. GTK sets one
+# app_id per process from the program name, so this is reached for directly.
+# Same 0.18 series as `gtk` above, so no second GDK enters the graph.
+# `gdk_wayland_window_set_application_id` landed in GTK 3.24.22 (2020) and the
+# binding is gated on saying so. Every distribution this ships to is well past
+# it; Ubuntu 22.04, the oldest the packaging workflow builds on, has 3.24.33.
+gdkwayland-sys = { version = "0.18", features = ["v3_24_22"] }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-single-instance = "2"

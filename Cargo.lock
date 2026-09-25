@@ -2123,6 +2123,7 @@ dependencies = [
  "boundary-provision",
  "bytes",
  "crossbeam-channel",
+ "gdkwayland-sys",
  "gtk",
  "limb-core",
  "os_info",

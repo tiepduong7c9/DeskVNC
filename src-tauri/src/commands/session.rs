@@ -2448,7 +2448,20 @@ pub async fn open_session_window(
     // live in the library window, and giving that window one host's icon
     // would mislabel every other tab in it.
     let icon = icon_png.as_deref().and_then(crate::hosticon::to_image);
-    if let Err(e) = windows::open_session_window(&app, &params, &name, icon) {
+
+    // On GNOME the per-window icon above is not what a dock draws; a desktop
+    // entry matched by `app_id` is. Written here rather than on save so it
+    // tracks the icon and the name a session actually opens with, and skipped
+    // entirely for a host that has chosen no icon.
+    #[cfg(target_os = "linux")]
+    let app_id = match (&icon_png, &profile_id) {
+        (Some(png), Some(pid)) => crate::appid::publish(state.store.data_dir(), pid, &name, png),
+        _ => None,
+    };
+    #[cfg(not(target_os = "linux"))]
+    let app_id = None;
+
+    if let Err(e) = windows::open_session_window(&app, &params, &name, icon, app_id) {
         state.opening_windows.lock().remove(&id);
         return Err(e.to_string());
     }

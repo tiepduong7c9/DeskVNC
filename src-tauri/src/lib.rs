@@ -6,6 +6,8 @@
 //! tray, and the capability-scoped IPC surface.
 
 mod agent;
+#[cfg(target_os = "linux")]
+mod appid;
 mod commands;
 mod framing;
 mod hosticon;

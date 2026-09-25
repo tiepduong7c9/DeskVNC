@@ -76,11 +76,15 @@ fn encode_component(value: &str) -> String {
 /// [`crate::hosticon`] for which and why. It is handed to the builder rather
 /// than set after the fact so the window is never drawn wearing the
 /// application icon and swapping a frame later.
+/// `app_id` names a generated desktop entry (see [`crate::appid`]) and is what
+/// gives the window its own dock icon on GNOME, where the per-window `icon` is
+/// never consulted. Linux only; ignored everywhere else.
 pub fn open_session_window(
     app: &AppHandle,
     params: &SessionWindowParams<'_>,
     title: &str,
     icon: Option<Image<'static>>,
+    app_id: Option<String>,
 ) -> tauri::Result<WebviewWindow> {
     let label = session_label(params.session_id);
     if let Some(existing) = app.get_webview_window(&label) {
@@ -120,7 +124,29 @@ pub fn open_session_window(
         // a window with no icon, and it is unreachable either way.
         builder = builder.icon(icon)?;
     }
+    // A window has to carry its `app_id` before the compositor first sees it,
+    // or GNOME matches it to the shared application and the dock draws the
+    // wrong icon. So when there is one to set, the window is built hidden and
+    // shown a few lines later.
+    let deferred_show = cfg!(target_os = "linux") && app_id.is_some();
+    if deferred_show {
+        builder = builder.visible(false);
+    }
     let window = builder.build()?;
+
+    #[cfg(target_os = "linux")]
+    if let Some(app_id) = &app_id {
+        crate::appid::set_app_id(&window, app_id);
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = &app_id;
+
+    if deferred_show {
+        // Unconditional, and not inside the block above: a window built hidden
+        // must end up visible even if naming it failed, or the session would
+        // be connected and invisible.
+        window.show()?;
+    }
     Ok(window)
 }
 
