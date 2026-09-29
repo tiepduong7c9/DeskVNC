@@ -1388,18 +1388,22 @@ impl RunLoop {
                 } else {
                     let changed = (width, height) != (self.fb_width, self.fb_height);
                     self.apply_resize(width, height, events).await?;
-                    // The pipelined incremental request for the next update
-                    // was sent with the OLD full rect. After a grow, nothing
-                    // covers the new strip: if the server has no damage
-                    // inside the old rect, no update arrives, no new request
-                    // is generated, and the strip stays blank forever. An
-                    // INCREMENTAL request for the new geometry is loop-safe
-                    // (the PRD/02 §9 hazard is only about non-incremental
-                    // requests after our own SetDesktopSize); apply_resize
-                    // already re-armed continuous updates when active.
-                    if changed && !self.cu_active {
-                        let msg = messages::framebuffer_update_request(true, self.full_rect());
-                        self.send(&msg).await?;
+                    // The renderer throws its texture away on a resize, so
+                    // after one we hold NO pixels at all, and the request for
+                    // the new geometry has to be non-incremental. It used to
+                    // be incremental, which lets a server answer with only
+                    // what it thinks changed: TigerVNC damages the whole
+                    // screen on a resize, but plenty of servers do not, and
+                    // the rest of the desktop stayed black until a reconnect
+                    // primed a fresh connection with a full request. Needed
+                    // under continuous updates too, which only push damage.
+                    //
+                    // Loop-safe despite PRD/02 §9: a server may answer a
+                    // non-incremental request with another ExtendedDesktopSize
+                    // (TigerVNC always does), but at the size we already
+                    // have, so `changed` is false and nothing is re-sent.
+                    if changed {
+                        self.send_full_refresh().await?;
                     }
                 }
                 // AFTER the resize: the UI applies a per-monitor view against
