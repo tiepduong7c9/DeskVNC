@@ -547,6 +547,7 @@ impl<R: AsyncRead + Unpin> RunLoop<R> {
                         let mut out = Outbox::new();
                         self.vc
                             .deliver(channel_id, payload.as_slice(), ctx, &mut out)?;
+                        self.adopt_channel_resize(&out.events);
                         return Ok(SessionSignal::Channel {
                             events: out.events,
                             frames: out.frames,
@@ -960,6 +961,25 @@ impl<R: AsyncRead + Unpin> RunLoop<R> {
             other => {
                 tracing::debug!(?other, "command has no wire path yet");
                 Ok(None)
+            }
+        }
+    }
+
+    /// Adopt a desktop size a virtual channel announced.
+    ///
+    /// A graphics pipeline server resizes with `RDPGFX_RESET_GRAPHICS_PDU`
+    /// alone, no Deactivate All and no fresh Demand Active: GNOME Remote
+    /// Desktop does exactly that when Display Control changes its virtual
+    /// monitor. The picture followed, because the event reaches the UI, but
+    /// the input clamp kept the size from the capability exchange, so after a
+    /// grow every pointer position in the new strip was pinned to the old
+    /// edge and the bottom and right of the desktop could not be reached.
+    /// A refresh asked for the old rectangle for the same reason.
+    fn adopt_channel_resize(&mut self, events: &[SessionEvent]) {
+        for event in events {
+            if let SessionEvent::DesktopResize { width, height } = *event {
+                self.activated.desktop = (width, height);
+                self.input.set_desktop((width, height));
             }
         }
     }
@@ -1565,6 +1585,30 @@ mod tests {
         )));
         assert_eq!(rl.activated.share_id, 0x0010_3eaa);
         assert_eq!(rl.graphics.desktop(), (800, 600));
+    }
+
+    /// A graphics pipeline resize arrives as a channel event alone, with no
+    /// fresh capability exchange, and the pointer has to be able to reach the
+    /// grown part of the desktop afterwards. It used to stay clamped to the
+    /// size settled at connect: GNOME Remote Desktop's bottom and right strips
+    /// were dead after every grow.
+    #[test]
+    fn a_channel_resize_moves_the_pointer_clamp_with_it() {
+        let mut rl = loop_over(&[]);
+        assert_eq!(rl.activated.desktop, (64, 64));
+        rl.adopt_channel_resize(&[SessionEvent::DesktopResize {
+            width: 1920,
+            height: 1080,
+        }]);
+        assert_eq!(rl.activated.desktop, (1920, 1080));
+        assert_eq!(
+            rl.input.pointer(10, 1079, 0),
+            vec![rdp_pdu::input::fastpath::FastPathInputEvent::Mouse {
+                flags: rdp_pdu::input::pointer_flags::MOVE,
+                x: 10,
+                y: 1079,
+            }]
+        );
     }
 
     /// A Set Error Info PDU is the server saying why the session is about to
