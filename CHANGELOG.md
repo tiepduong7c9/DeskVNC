@@ -10,6 +10,11 @@ to stored data and to the IPC contract between the Rust core and the frontend.
 
 ## [Unreleased]
 
+## [0.29.1] - 2026-09-29
+
+This is a fork release. It is not an upstream version and the tag exists only
+in this fork.
+
 ### Fixed
 
 - **"Resize remote to window resolution" now follows the window on RDP.** A
@@ -2596,7 +2601,8 @@ Core capability at this point:
 - Adaptive quality presets, remote desktop resize, and automatic reconnect with
   backoff and jitter.
 
-[Unreleased]: https://github.com/tiepduong7c9/DeskVNC/compare/v0.29.0...HEAD
+[Unreleased]: https://github.com/tiepduong7c9/DeskVNC/compare/v0.29.1...HEAD
+[0.29.1]: https://github.com/tiepduong7c9/DeskVNC/compare/v0.29.0...v0.29.1
 [0.29.0]: https://github.com/tiepduong7c9/DeskVNC/compare/v0.28.0...v0.29.0
 [0.28.0]: https://github.com/tiepduong7c9/DeskVNC/compare/v0.27.4...v0.28.0
 [0.27.4]: https://github.com/psmux/DeskVNC/compare/v0.27.3...v0.27.4
