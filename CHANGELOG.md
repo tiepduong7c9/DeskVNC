@@ -10,6 +10,25 @@ to stored data and to the IPC contract between the Rust core and the frontend.
 
 ## [Unreleased]
 
+### Fixed
+
+- **"Resize remote to window resolution" now follows the window on RDP.** A
+  window resize reached the server only when the RDP resolution was set to
+  match the window; the scaling mode was ignored there, although choosing it
+  sent one resize. So against gnome-remote-desktop the desktop resized when the
+  mode was picked and never again on a maximize. Either setting now makes the
+  remote follow the window.
+- **After an RDP resize the pointer reaches the whole desktop.** A graphics
+  pipeline server resizes with a Reset Graphics PDU and nothing else, and
+  gnome-remote-desktop does exactly that. The picture followed, but the input
+  kept clamping to the size from connect, so after a grow the new bottom and
+  right strips got no hover and no clicks. A screen refresh asked for the old
+  rectangle for the same reason.
+- **A VNC desktop repaints in full after a resize.** The viewer discards its
+  picture on a resize and then asked only for what changed, which a server
+  that does not treat a resize as damage answered with very little: the rest
+  stayed black until a reconnect. It now asks for the whole new desktop.
+
 ## [0.29.0] - 2026-09-25
 
 This is a fork release. It is not an upstream version and the tag exists only

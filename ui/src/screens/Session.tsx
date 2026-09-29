@@ -552,10 +552,13 @@ function SessionView({
     // Remote-resize mode: debounce ~500ms, request the window's physical pixels
     let resizeTimer = 0;
     const scheduleRemoteResize = (): void => {
-      // For RDP the resolution setting is the authority; for VNC, whose remote
-      // size has no setting of its own, the scaling mode still is.
+      // Either one asks for it: RDP's "match the window" resolution, or the
+      // "resize remote" scaling mode, which VNC has instead of a resolution
+      // setting. The scaling mode used to be ignored for RDP here while
+      // choosing it still sent one resize, so a GNOME Remote Desktop session
+      // resized on the mode change and never again on a maximize.
       const rdp = resolutionRef.current;
-      const follows = rdp ? rdp.mode === "follow-window" : modeRef.current === "remote-resize";
+      const follows = rdp?.mode === "follow-window" || modeRef.current === "remote-resize";
       if (!follows) return;
       window.clearTimeout(resizeTimer);
       resizeTimer = window.setTimeout(() => {

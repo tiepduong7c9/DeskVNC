@@ -642,22 +642,23 @@ async fn a_desktop_grow_requests_an_update_for_the_new_geometry() {
         })
         .await;
 
-    // The pipelined request preceding the resize covered the OLD rect. If the
-    // server has no damage inside that rect it sends nothing further, no new
-    // request is ever generated, and the grown strip stays blank forever, so
-    // the resize itself must request the new geometry.
+    // The pipelined request preceding the resize covered the OLD rect, and the
+    // renderer discards its picture on a resize, so the resize itself must
+    // ask for the whole new geometry NON-incrementally. An incremental one
+    // lets a server that does not damage everything on a resize leave the
+    // desktop black until a reconnect.
     let seen = server
         .wait_until(DEFAULT_TIMEOUT, |r| {
             r.messages.iter().any(|m| {
                 matches!(m,
-                    ClientMessage::FramebufferUpdateRequest { incremental: true, rect }
+                    ClientMessage::FramebufferUpdateRequest { incremental: false, rect }
                         if rect.width == 1280 && rect.height == 800)
             })
         })
         .await;
     assert!(
         seen,
-        "no incremental request covering the grown geometry: {:?}",
+        "no full request covering the grown geometry: {:?}",
         server.messages()
     );
     handle.shutdown();
